@@ -25,7 +25,7 @@
 
   const COMMONS_BASE = 'https://commons.sch.ac.kr';
   const CONTENT_API = `${COMMONS_BASE}/viewer/ssplayer/uniplayer_support/content.php`;
-  const VERSION = '1.6.0';
+  const VERSION = '1.6.1';
   const DL_CONCURRENCY = 5;
 
   let isRunning = false;
@@ -186,7 +186,6 @@
           };
         });
     } catch (e) {
-      console.warn('[SCH PDF Easy] Canvas File API 실패:', e.message);
       return [];
     }
   }
@@ -212,8 +211,6 @@
     const url = `${CONTENT_API}?content_id=${encodeURIComponent(effectiveContentId)}&_=${Date.now()}`;
     const response = await fetch(url);
     const text = await response.text();
-    console.log('[SCH PDF Easy] content.php 응답 (contentId=' + effectiveContentId + '):', text.substring(0, 300));
-
     const xml = new DOMParser().parseFromString(text, 'text/xml');
     const downloadUri = xml.querySelector('content_download_uri');
     if (downloadUri && downloadUri.textContent) {

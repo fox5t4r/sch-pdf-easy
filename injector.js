@@ -3,13 +3,13 @@
  *
  * 두 가지 페이지 타입을 지원합니다:
  *   1. coursebuilder (강의콘텐츠, external_tools/1)
- *      → React Hooks + Redux Store 탐색
+ *      → React Fiber + Redux Store 탐색
  *      → commons_content PDF/PPT, type=text 페이지 첨부 파일 추출
  *
  *   2. courseresource (강의자료실, external_tools/2)
- *      → DOM에서 .xn-resource-item 탐색
- *      → LX API 직접 호출로 리소스 목록 취득 → resourceId 매핑
- *      → LearningX progress/force API로 다운로드
+ *      → DOM .xn-resource-item 탐색
+ *      → LX API 리소스 목록으로 commons_content.content_id 획득
+ *      → commons content.php API로 다운로드 URL 획득
  */
 
 (function () {
@@ -18,7 +18,7 @@
   var _idCounter = 0;
 
   // ────────────────────────────────────────────────────────
-  // LX API 캐시 (iframe fetch 인터셉터 + 스캔 시 직접 호출로 채움)
+  // LX API 캐시 (iframe fetch 인터셉터 + 직접 호출로 채움)
   // ────────────────────────────────────────────────────────
 
   var _lxCache = { courseId: null, resources: null };
@@ -43,7 +43,6 @@
               if (arr && arr.length > 0) {
                 _lxCache.resources = arr;
                 if (m) _lxCache.courseId = m[1];
-                console.log('[SCH PDF Easy] LX resources 인터셉트:', _lxCache.courseId, arr.length + '개. 키:', Object.keys(arr[0]).join(', '));
               }
             }).catch(function () {});
           }).catch(function () {});
@@ -203,52 +202,20 @@
   }
 
   // ────────────────────────────────────────────────────────
-  // Canvas API로 login_id(학번) 조회
-  // ────────────────────────────────────────────────────────
-
-  async function fetchCanvasLoginId() {
-    if (_lxCache.loginId) return _lxCache.loginId;
-    try {
-      var resp = await fetch('/api/v1/users/self', { credentials: 'include' });
-      if (!resp.ok) return null;
-      var raw = await resp.text();
-      // Canvas XSSI 방지: "while(1);" 접두사 제거
-      var data = JSON.parse(raw.replace(/^\s*while\s*\(\s*1\s*\)\s*;/, ''));
-      console.log('[SCH PDF Easy] Canvas /users/self:', JSON.stringify({
-        id: data.id, login_id: data.login_id, sis_user_id: data.sis_user_id,
-      }));
-      var id = data.login_id || data.sis_user_id || null;
-      if (id) _lxCache.loginId = String(id);
-      return _lxCache.loginId || null;
-    } catch (e) {
-      console.warn('[SCH PDF Easy] Canvas users/self 실패:', e.message);
-      return null;
-    }
-  }
-
-  // ────────────────────────────────────────────────────────
   // LX API 직접 호출 (리소스 목록 취득)
   // ────────────────────────────────────────────────────────
 
   async function fetchLxResources(courseId) {
     try {
-      var url = '/learningx/api/v1/courses/' + courseId + '/resources';
-      var resp = await fetch(url, { credentials: 'include' });
-      console.log('[SCH PDF Easy] LX resources fetch:', resp.status, url);
+      var resp = await fetch('/learningx/api/v1/courses/' + courseId + '/resources', { credentials: 'include' });
       if (!resp.ok) return;
       var data = await resp.json();
       var arr = Array.isArray(data) ? data : (data.resources || data.items || data.data || null);
       if (arr && arr.length > 0) {
         _lxCache.resources = arr;
         _lxCache.courseId = courseId;
-        console.log('[SCH PDF Easy] LX resources:', arr.length + '개. 키:', Object.keys(arr[0]).join(', '));
-        console.log('[SCH PDF Easy] LX resource[0] 샘플:', JSON.stringify(arr[0]).slice(0, 300));
-      } else {
-        console.log('[SCH PDF Easy] LX resources 응답 비어 있음:', JSON.stringify(data).slice(0, 200));
       }
-    } catch (e) {
-      console.warn('[SCH PDF Easy] LX fetch 실패:', e.message);
-    }
+    } catch (e) { /* 무시 */ }
   }
 
   // ────────────────────────────────────────────────────────
@@ -257,27 +224,14 @@
 
   async function extractFromCourseResource(iframeDoc) {
     var files = [];
-    var lxCtx = getLxContext(iframeDoc);
-    console.log('[SCH PDF Easy] LX context:', JSON.stringify(lxCtx));
+    var courseId = getLxCourseId();
 
-    // login_id(학번) 조회 — window.ENV에 없는 경우 Canvas API로 보완
-    if (!lxCtx.userId || !/^\d{7,}$/.test(lxCtx.userId)) {
-      var canvasLoginId = await fetchCanvasLoginId();
-      if (canvasLoginId) lxCtx.userId = canvasLoginId;
+    if (!_lxCache.resources && courseId) {
+      await fetchLxResources(courseId);
     }
-
-    // 인터셉트로 캡처 못 했으면 직접 호출
-    if (!_lxCache.resources && lxCtx.courseId) {
-      await fetchLxResources(lxCtx.courseId);
-    }
-
-    var effectiveCourseId = _lxCache.courseId || lxCtx.courseId;
-    console.log('[SCH PDF Easy] effectiveCourseId:', effectiveCourseId, '/ resources:', _lxCache.resources ? _lxCache.resources.length + '개' : 'null');
 
     var items = iframeDoc.querySelectorAll('.xn-resource-item');
-    console.log('[SCH PDF Easy] 강의자료실 items 수:', items.length);
-
-    items.forEach(function (item, idx) {
+    items.forEach(function (item) {
       var descEl = item.querySelector('.xnri-description.pdf, .xnri-description.ppt, .xnri-description.pptx');
       if (!descEl) return;
 
@@ -291,22 +245,9 @@
       var contentId = match[1];
 
       var cachedRes = findCachedResource(contentId, title);
-      var resourceId = (cachedRes ? String(cachedRes.resource_id || '') : '') || getResourceIdFromDom(item);
-
-      // commons_content.content_id = LX API가 실제로 쓰는 content_id (UUID와 다를 수 있음)
-      var lxContentId = null;
-      if (cachedRes && cachedRes.commons_content) {
-        var cc = cachedRes.commons_content;
-        lxContentId = cc.content_id || cc.xn_id || cc.xnid || null;
-        console.log('[SCH PDF Easy] commons_content:', JSON.stringify(cc).slice(0, 300));
-      }
-
-      console.log('[SCH PDF Easy] item[' + idx + ']:', {
-        title: title,
-        contentId: contentId,
-        lxContentId: lxContentId,
-        resourceId: resourceId,
-      });
+      var lxContentId = cachedRes && cachedRes.commons_content
+        ? (cachedRes.commons_content.content_id || null)
+        : null;
 
       files.push({
         title: title,
@@ -316,168 +257,38 @@
         subsection: '',
         type: 'lx_resource',
         ext: ext,
-        lxCourseId: effectiveCourseId,
-        userId: lxCtx.userId,
-        resourceId: resourceId,
       });
     });
 
     return files;
   }
 
-  // ────────────────────────────────────────────────────────
-  // LearningX 컨텍스트 추출 (courseId, userId)
-  // ────────────────────────────────────────────────────────
-
-  function getLxContext(iframeDoc) {
-    var courseId = null;
-    var userId = null;
-
-    // 1. iframe URL 파라미터
-    try {
-      var win = iframeDoc.defaultView;
-      var search = new URLSearchParams(win.location.search);
-      courseId = search.get('course_id') || search.get('custom_canvas_course_id') || search.get('context_id');
-      userId   = search.get('user_id') || search.get('ext_user_username') || search.get('lis_person_sourcedid');
-      if (!courseId) courseId = win.COURSE_ID   != null ? String(win.COURSE_ID)   : null;
-      if (!userId)   userId   = win.userLoginId != null ? String(win.userLoginId) : null;
-      if (!courseId) courseId = win.localStorage.getItem('course_id') || win.localStorage.getItem('courseId');
-      if (!userId)   userId   = win.localStorage.getItem('userLoginId') || win.localStorage.getItem('user_login');
-    } catch (e) { }
-
-    // 2. window.ENV (MAIN world)
+  // Canvas ENV에서 course_id 추출
+  function getLxCourseId() {
     try {
       var env = window.ENV;
-      if (env) {
-        var cu = env.current_user || {};
-        // 로그: current_user 필드 확인용
-        console.log('[SCH PDF Easy] current_user 필드:', JSON.stringify({
-          id: cu.id, login_id: cu.login_id, sis_user_id: cu.sis_user_id,
-          pseudonym_login: cu.pseudonym_login, current_user_id: env.current_user_id,
-        }));
-        if (!userId) {
-          // login_id = 학번 (8자리), 없으면 sis_user_id, 없으면 Canvas 내부 ID
-          userId = cu.login_id || cu.sis_user_id || cu.pseudonym_login ||
-                   (env.current_user_id != null ? String(env.current_user_id) : null);
-        }
-        if (!courseId && env.course_id != null) courseId = String(env.course_id);
-      }
+      if (env && env.course_id != null) return String(env.course_id);
     } catch (e) { }
-
-    return { courseId: courseId, userId: userId };
+    return null;
   }
-
-  // ────────────────────────────────────────────────────────
-  // resourceId 탐색
-  // ────────────────────────────────────────────────────────
 
   // LX API 캐시에서 contentId/title로 매칭된 리소스 객체 반환
   function findCachedResource(contentId, title) {
     var resources = _lxCache.resources;
     if (!resources) return null;
 
-    // contentId 기준 (다양한 필드명 시도)
     var idFields = ['xn_id', 'content_id', 'xnid', 'uuid', 'commons_content_id', 'commons_id', 'key'];
     for (var i = 0; i < resources.length; i++) {
       var r = resources[i];
       for (var k = 0; k < idFields.length; k++) {
-        if (r[idFields[k]] === contentId) {
-          console.log('[SCH PDF Easy] resourceId 캐시 매핑 (' + idFields[k] + '):', r.resource_id);
-          return r;
-        }
+        if (r[idFields[k]] === contentId) return r;
       }
     }
 
-    // title 기준 폴백
     for (var j = 0; j < resources.length; j++) {
-      if (resources[j].title === title || resources[j].name === title) {
-        console.log('[SCH PDF Easy] resourceId 타이틀 매핑:', resources[j].resource_id);
-        return resources[j];
-      }
+      if (resources[j].title === title || resources[j].name === title) return resources[j];
     }
 
-    return null;
-  }
-
-  // DOM / React instance에서 resourceId 추출 (폴백)
-  function getResourceIdFromDom(item) {
-    var dataId = item.getAttribute('data-id') ||
-                 item.getAttribute('data-resource-id') ||
-                 item.getAttribute('data-xnid');
-    if (dataId && /^\d+$/.test(dataId)) return dataId;
-
-    var idMatch = (item.id || '').match(/(\d{4,})/);
-    if (idMatch) return idMatch[1];
-
-    var reactKey = Object.keys(item).find(function (k) { return k.startsWith('__reactInternalInstance'); });
-    if (reactKey) {
-      try {
-        var inst = item[reactKey];
-        if (inst._currentElement && inst._currentElement.props) {
-          var r1 = extractIdFromObj(inst._currentElement.props);
-          if (r1) return r1;
-        }
-        if (inst._instance) {
-          var r2 = extractIdFromObj(inst._instance.props) || extractIdFromObj(inst._instance.state);
-          if (r2) return r2;
-        }
-        var r3 = searchReactForId(inst._renderedComponent, 0);
-        if (r3) return r3;
-      } catch (e) { /* 무시 */ }
-    }
-
-    var els = item.querySelectorAll('[href],[onclick],[data-url]');
-    for (var i = 0; i < els.length; i++) {
-      var str = els[i].getAttribute('href') || els[i].getAttribute('onclick') || els[i].getAttribute('data-url') || '';
-      var m = str.match(/\/resources\/(\d+)/) || str.match(/resource_id[=:\s]+(\d+)/i);
-      if (m) return m[1];
-    }
-
-    return null;
-  }
-
-  function searchReactForId(inst, depth) {
-    if (!inst || depth > 15) return null;
-    if (inst._currentElement && inst._currentElement.props) {
-      var r = extractIdFromObj(inst._currentElement.props);
-      if (r) return r;
-    }
-    if (inst._instance) {
-      var r2 = extractIdFromObj(inst._instance.props) || extractIdFromObj(inst._instance.state);
-      if (r2) return r2;
-    }
-    if (inst._renderedComponent) {
-      var r3 = searchReactForId(inst._renderedComponent, depth + 1);
-      if (r3) return r3;
-    }
-    if (inst._renderedChildren) {
-      var children = inst._renderedChildren;
-      for (var key in children) {
-        if (Object.prototype.hasOwnProperty.call(children, key)) {
-          var r4 = searchReactForId(children[key], depth + 1);
-          if (r4) return r4;
-        }
-      }
-    }
-    return null;
-  }
-
-  function extractIdFromObj(obj) {
-    if (!obj || typeof obj !== 'object') return null;
-    var directKeys = ['resource_id', 'resourceId', 'xnid', 'xn_id'];
-    for (var i = 0; i < directKeys.length; i++) {
-      var v = obj[directKeys[i]];
-      if (v != null && /^\d+$/.test(String(v))) return String(v);
-    }
-    if (obj.id != null && /^\d{4,}$/.test(String(obj.id))) return String(obj.id);
-    var nestedKeys = ['resource', 'item', 'data', 'file', 'content'];
-    for (var j = 0; j < nestedKeys.length; j++) {
-      var sub = obj[nestedKeys[j]];
-      if (sub && typeof sub === 'object') {
-        var r = extractIdFromObj(sub);
-        if (r) return r;
-      }
-    }
     return null;
   }
 
