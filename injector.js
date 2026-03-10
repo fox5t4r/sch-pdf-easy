@@ -347,15 +347,15 @@
         // _currentElement.props 확인 (React 15 엘리먼트 레벨)
         if (inst._currentElement && inst._currentElement.props) {
           var elProps = inst._currentElement.props;
-          console.log('[SCH PDF Easy] _currentElement.props:', JSON.stringify(elProps));
+          console.log('[SCH PDF Easy] _currentElement.props keys:', Object.keys(elProps || {}).join(', '));
           var r1 = extractIdFromObj(elProps);
           if (r1) return r1;
         }
 
         // _instance.props / state 확인 (컴포넌트 레벨)
         if (inst._instance) {
-          console.log('[SCH PDF Easy] component.props:', JSON.stringify(inst._instance.props));
-          console.log('[SCH PDF Easy] component.state:', JSON.stringify(inst._instance.state));
+          console.log('[SCH PDF Easy] component.props keys:', Object.keys(inst._instance.props || {}).join(', '));
+          console.log('[SCH PDF Easy] component.state keys:', Object.keys(inst._instance.state || {}).join(', '));
           var r2 = extractIdFromObj(inst._instance.props) || extractIdFromObj(inst._instance.state);
           if (r2) return r2;
         }
