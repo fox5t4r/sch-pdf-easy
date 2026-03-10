@@ -17,7 +17,7 @@
  *   결과 병합 (contentId 기준 중복 제거)
  *
  * [다운로드 전략]
- *   최대 3개 병렬 다운로드
+ *   최대 5개 병렬 다운로드
  */
 
 (function () {
@@ -25,12 +25,13 @@
 
   const COMMONS_BASE = 'https://commons.sch.ac.kr';
   const CONTENT_API = `${COMMONS_BASE}/viewer/ssplayer/uniplayer_support/content.php`;
-  const VERSION = '1.4.0';
+  const VERSION = '1.5.0';
   const DL_CONCURRENCY = 5;
 
   let isRunning = false;
   let currentPDFs = [];
   let downloadedFiles = {};
+  let _progressTimer = null;
 
   // ──────────────────────────────────────────────
   // SVG Icons (GitHub Octicons style)
@@ -158,20 +159,32 @@
   async function scanCanvasFiles(courseId) {
     try {
       const res = await fetch(
-        `/api/v1/courses/${courseId}/files?content_types[]=application/pdf&per_page=100&sort=created_at&order=desc`,
+        `/api/v1/courses/${courseId}/files?` +
+          `content_types[]=application/pdf` +
+          `&content_types[]=application/vnd.ms-powerpoint` +
+          `&content_types[]=application/vnd.openxmlformats-officedocument.presentationml.presentation` +
+          `&per_page=100&sort=created_at&order=desc`,
         { credentials: 'include' }
       );
       if (!res.ok) return [];
       const files = await res.json();
       if (!Array.isArray(files)) return [];
-      return files.map((f) => ({
-        title: (f.display_name || f.filename || 'untitled').replace(/\.pdf$/i, ''),
-        contentId: `cf_${f.id}`,
-        section: '강의자료',
-        subsection: '',
-        type: 'canvas_file',
-        directUrl: f.url,
-      }));
+      return files
+        // f.id 또는 f.url 누락 시 제외 — cf_undefined contentId / undefined directUrl 방지
+        .filter((f) => f.id && f.url)
+        .map((f) => {
+          const fname = f.display_name || f.filename || '';
+          const ext = /\.pptx$/i.test(fname) ? 'pptx' : /\.ppt$/i.test(fname) ? 'ppt' : 'pdf';
+          return {
+            title: fname.replace(/\.(pdf|pptx?)$/i, '') || 'untitled',
+            contentId: `cf_${f.id}`,
+            section: '강의자료',
+            subsection: '',
+            type: 'canvas_file',
+            ext,
+            directUrl: f.url,
+          };
+        });
     } catch (e) {
       console.warn('[SCH PDF Easy] Canvas File API 실패:', e.message);
       return [];
@@ -258,8 +271,8 @@
 
     if (allPDFs.length === 0) {
       const reason = !finalRedux.success ? finalRedux.error || 'PDF 없음' : 'PDF 없음';
-      setStatus(reason, canvasFiles.length === 0 ? 'warn' : 'warn');
-      listEl.innerHTML = `<div class="spe-empty-state"><span>검색된 PDF 없음</span></div>`;
+      setStatus(reason, 'warn');
+      listEl.innerHTML = `<div class="spe-empty-state"><span>검색된 파일 없음</span></div>`;
       return;
     }
 
@@ -299,8 +312,10 @@
           <div class="spe-pdf-item-title">${escapeHtml(pdf.title)}</div>
           <div class="spe-pdf-item-meta">${escapeHtml(pdf.section)}${pdf.subsection ? ' · ' + escapeHtml(pdf.subsection) : ''}</div>
         </div>
-        <button class="spe-pdf-item-dl spe-icon-btn" data-content-id="${pdf.contentId}" title="개별 다운로드">${I.dlSmall}</button>
+        <button class="spe-pdf-item-dl spe-icon-btn" title="개별 다운로드">${I.dlSmall}</button>
       `;
+      // contentId는 innerHTML 보간 대신 안전하게 속성으로 직접 설정
+      item.querySelector('.spe-pdf-item-dl').dataset.contentId = pdf.contentId;
       listEl.appendChild(item);
 
       item.querySelector('.spe-pdf-item-dl').addEventListener('click', async (e) => {
@@ -338,7 +353,7 @@
   async function downloadSingle(pdf) {
     try {
       const downloadUrl = await getDownloadUrl(pdf);
-      const filename = `${sanitizeFilename(pdf.title)}.pdf`;
+      const filename = `${sanitizeFilename(pdf.title)}.${pdf.ext || 'pdf'}`;
       const urlWithName = pdf.directUrl
         ? downloadUrl
         : `${downloadUrl}&file_name=${encodeURIComponent(pdf.title)}`;
@@ -381,8 +396,10 @@
 
     dlBtn.disabled = true;
     dlAllBtn.disabled = true;
+    clearTimeout(_progressTimer); // 이전 batch 완료 타이머 취소
     progressContainer.style.display = 'flex';
     progressFill.style.width = '0%';
+    progressText.textContent = `0/${pdfs.length}`;
 
     let completed = 0;
     const total = pdfs.length;
@@ -392,11 +409,11 @@
     async function worker() {
       while (queue.length > 0) {
         const pdf = queue.shift();
-        if (!pdf) break;
 
         try {
           await downloadSingle(pdf);
-          const btn = document.querySelector(`[data-content-id="${pdf.contentId}"]`);
+          // CSS.escape: contentId에 ] 또는 " 포함 시 selector 파싱 오류 방지
+          const btn = document.querySelector(`[data-content-id="${CSS.escape(pdf.contentId)}"]`);
           if (btn) markItemDone(btn, pdf.contentId);
         } catch (err) {
           console.error(`[SCH PDF Easy] 실패: ${pdf.title}`, err);
@@ -425,7 +442,7 @@
     }
     dlAllBtn.disabled = false;
 
-    setTimeout(() => { progressContainer.style.display = 'none'; }, 3000);
+    _progressTimer = setTimeout(() => { progressContainer.style.display = 'none'; }, 3000);
   }
 
   async function clearHistory() {
