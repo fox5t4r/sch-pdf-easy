@@ -25,7 +25,7 @@
 
   const COMMONS_BASE = 'https://commons.sch.ac.kr';
   const CONTENT_API = `${COMMONS_BASE}/viewer/ssplayer/uniplayer_support/content.php`;
-  const VERSION = '1.5.0';
+  const VERSION = '1.6.0';
   const DL_CONCURRENCY = 5;
 
   let isRunning = false;
@@ -198,17 +198,38 @@
   async function getDownloadUrl(pdf) {
     // Canvas 파일 / 페이지 첨부 / 직접 업로드: URL이 이미 있음
     if (pdf.directUrl) {
-      // 상대 URL(/courses/...) → 절대 URL로 변환
       if (pdf.directUrl.startsWith('/')) {
         return `https://medlms.sch.ac.kr${pdf.directUrl}`;
       }
       return pdf.directUrl;
     }
 
+    // 강의자료실 (lx_resource): LearningX progress/force API 사용
+    // URL 패턴: /learningx/api/v1/courses/{lxCourseId}/resources/{resourceId}/progress/force
+    //           ?user_id={userId}&content_id={contentId}&content_type={ext}
+    if (pdf.type === 'lx_resource') {
+      if (pdf.resourceId && pdf.userId && pdf.lxCourseId) {
+        const lxUrl = `https://medlms.sch.ac.kr/learningx/api/v1/courses/${pdf.lxCourseId}/resources/${pdf.resourceId}/progress/force` +
+          `?user_id=${encodeURIComponent(pdf.userId)}` +
+          `&content_id=${encodeURIComponent(pdf.contentId)}` +
+          `&content_type=${pdf.ext || 'pdf'}`;
+        console.log('[SCH PDF Easy] LX download URL:', lxUrl);
+        return lxUrl;
+      }
+      // 필요한 정보 부족 → 콘솔에 출력 후 content.php로 폴백
+      console.warn('[SCH PDF Easy] lx_resource 정보 부족 — content.php 폴백:', {
+        lxCourseId: pdf.lxCourseId,
+        resourceId: pdf.resourceId,
+        userId: pdf.userId,
+        contentId: pdf.contentId,
+      });
+    }
+
     // Commons 콘텐츠: content.php XML API로 다운로드 URL 획득
-    const url = `${CONTENT_API}?content_id=${pdf.contentId}&_=${Date.now()}`;
+    const url = `${CONTENT_API}?content_id=${encodeURIComponent(pdf.contentId)}&_=${Date.now()}`;
     const response = await fetch(url);
     const text = await response.text();
+    console.log('[SCH PDF Easy] content.php 응답 (contentId=' + pdf.contentId + '):', text.substring(0, 300));
 
     const xml = new DOMParser().parseFromString(text, 'text/xml');
     const downloadUri = xml.querySelector('content_download_uri');
@@ -354,7 +375,8 @@
     try {
       const downloadUrl = await getDownloadUrl(pdf);
       const filename = `${sanitizeFilename(pdf.title)}.${pdf.ext || 'pdf'}`;
-      const urlWithName = pdf.directUrl
+      // directUrl 또는 lx_resource는 &file_name 파라미터 불필요 (URL 구조 다름)
+      const urlWithName = (pdf.directUrl || pdf.type === 'lx_resource')
         ? downloadUrl
         : `${downloadUrl}&file_name=${encodeURIComponent(pdf.title)}`;
 

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SCH PDF Easy Downloader",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "순천향대 LMS(medlms.sch.ac.kr) 강의 PDF 자료를 한 번에 다운로드합니다.",
   "permissions": [
     "activeTab",
