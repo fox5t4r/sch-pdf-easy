@@ -25,8 +25,8 @@
 
   const COMMONS_BASE = 'https://commons.sch.ac.kr';
   const CONTENT_API = `${COMMONS_BASE}/viewer/ssplayer/uniplayer_support/content.php`;
-  const VERSION = '1.3.0';
-  const DL_CONCURRENCY = 3;
+  const VERSION = '1.4.0';
+  const DL_CONCURRENCY = 5;
 
   let isRunning = false;
   let currentPDFs = [];
@@ -183,10 +183,16 @@
   // ──────────────────────────────────────────────
 
   async function getDownloadUrl(pdf) {
-    // Canvas 파일 / 직접 업로드는 URL이 이미 있음
-    if (pdf.directUrl) return pdf.directUrl;
+    // Canvas 파일 / 페이지 첨부 / 직접 업로드: URL이 이미 있음
+    if (pdf.directUrl) {
+      // 상대 URL(/courses/...) → 절대 URL로 변환
+      if (pdf.directUrl.startsWith('/')) {
+        return `https://medlms.sch.ac.kr${pdf.directUrl}`;
+      }
+      return pdf.directUrl;
+    }
 
-    // Commons 콘텐츠: content.php XML API 사용
+    // Commons 콘텐츠: content.php XML API로 다운로드 URL 획득
     const url = `${CONTENT_API}?content_id=${pdf.contentId}&_=${Date.now()}`;
     const response = await fetch(url);
     const text = await response.text();
@@ -197,7 +203,7 @@
       return `${COMMONS_BASE}${downloadUri.textContent}`;
     }
 
-    // fallback
+    // fallback: 구형 commons 다운로드 URL 패턴
     return `${COMMONS_BASE}/index.php?module=xn_media_content2013&act=dispXn_media_content2013DownloadWebFile&site_id=sch1000001&content_id=${pdf.contentId}&web_storage_id=301&file_subpath=contents%5Cweb_files%5Coriginal.pdf`;
   }
 

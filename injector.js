@@ -1,26 +1,31 @@
 /**
  * SCH PDF Easy Downloader - Injector (MAIN world)
  *
- * 이 스크립트는 페이지의 MAIN world에서 실행되어
- * React/Redux 내부 변수에 직접 접근합니다.
- * 추출한 PDF 목록을 CustomEvent로 content.js(ISOLATED world)에 전달합니다.
+ * 두 가지 페이지 타입을 지원합니다:
+ *   1. coursebuilder (강의콘텐츠, external_tools/1)
+ *      → React Hooks + Redux Store 탐색
+ *      → commons_content PDF, type=text 페이지 첨부 PDF 추출
+ *
+ *   2. courseresource (강의자료실, external_tools/2)
+ *      → Redux 없음, DOM에서 직접 .xn-resource-item 탐색
+ *      → .xnri-description.pdf + thumbnail img src에서 content_id 추출
  */
 
 (function () {
   'use strict';
 
-  document.addEventListener('__SPE_SCAN_REQUEST', () => {
+  document.addEventListener('__SPE_SCAN_REQUEST', function () {
     performScan();
   });
 
   function performScan() {
-    const iframe = document.getElementById('tool_content');
+    var iframe = document.getElementById('tool_content');
     if (!iframe) {
       sendResult({ success: false, error: 'iframe#tool_content을 찾을 수 없습니다.' });
       return;
     }
 
-    let iframeDoc;
+    var iframeDoc;
     try {
       iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
     } catch (e) {
@@ -33,35 +38,48 @@
       return;
     }
 
-    const root = iframeDoc.getElementById('root');
+    var root = iframeDoc.getElementById('root');
     if (!root) {
-      sendResult({ success: false, error: 'iframe 내부 #root 요소를 찾을 수 없습니다.' });
+      sendResult({ success: false, error: 'iframe 내부 #root를 찾을 수 없습니다.' });
       return;
     }
 
-    const fiberKey = Object.keys(root).find(
-      (k) => k.startsWith('__reactFiber') || k.startsWith('__reactContainer')
-    );
-    if (!fiberKey) {
-      sendResult({ success: false, error: 'React Fiber를 찾을 수 없습니다.' });
+    // ── 방법 A: Redux Store (coursebuilder / 강의콘텐츠) ──
+    var fiberKey = Object.keys(root).find(function (k) {
+      return k.startsWith('__reactFiber') || k.startsWith('__reactContainer');
+    });
+
+    if (fiberKey) {
+      var store = findStore(root[fiberKey], 0);
+      if (store) {
+        try {
+          var state = store.getState();
+          var sections =
+            (state.sections && state.sections.sections) ||
+            (state.section && state.section.sections) ||
+            [];
+          var pdfs = extractFromRedux(sections);
+          sendResult({ success: true, pdfs: pdfs });
+          return;
+        } catch (e) {
+          // Redux 파싱 실패 시 DOM 스캔으로 폴백
+        }
+      }
+    }
+
+    // ── 방법 B: DOM 스캔 (courseresource / 강의자료실) ──
+    var domPdfs = extractFromCourseResource(iframeDoc);
+    if (domPdfs.length > 0) {
+      sendResult({ success: true, pdfs: domPdfs });
       return;
     }
 
-    const store = findStore(root[fiberKey], 0);
-    if (!store) {
-      sendResult({ success: false, error: 'Redux Store를 찾을 수 없습니다.' });
-      return;
-    }
-
-    try {
-      const state = store.getState();
-      const sections = state.sections?.sections || state.section?.sections || [];
-      const pdfs = extractPDFs(sections);
-      sendResult({ success: true, pdfs });
-    } catch (e) {
-      sendResult({ success: false, error: 'Redux 데이터 파싱 실패: ' + e.message });
-    }
+    sendResult({ success: false, error: 'PDF를 찾을 수 없습니다. (페이지 로딩 중이거나 PDF 자료 없음)' });
   }
+
+  // ────────────────────────────────────────────────────────
+  // Redux Store 탐색
+  // ────────────────────────────────────────────────────────
 
   function findStore(node, depth) {
     if (!node || depth > 30) return null;
@@ -71,19 +89,23 @@
     return findStore(node.child, depth + 1) || findStore(node.sibling, depth + 1);
   }
 
-  function extractPDFs(sections) {
-    const pdfs = [];
+  // ────────────────────────────────────────────────────────
+  // Redux 기반 PDF 추출 (강의콘텐츠)
+  // ────────────────────────────────────────────────────────
 
-    sections.forEach((section) => {
-      const subsections = section.subsections || section.sub_sections || [];
-      subsections.forEach((sub) => {
-        const units = sub.units || [];
-        units.forEach((unit) => {
-          const components = unit.components || unit.component_list || [];
-          components.forEach((comp) => {
+  function extractFromRedux(sections) {
+    var pdfs = [];
 
-            // ── 방법 1: commons_content (LTI 콘텐츠 PDF) ──
-            if (comp.commons_content?.content_type === 'pdf') {
+    sections.forEach(function (section) {
+      var subsections = section.subsections || section.sub_sections || [];
+      subsections.forEach(function (sub) {
+        var units = sub.units || [];
+        units.forEach(function (unit) {
+          var components = unit.components || unit.component_list || [];
+          components.forEach(function (comp) {
+
+            // ── 1. commons_content PDF (LTI 동영상/PDF 플레이어) ──
+            if (comp.commons_content && comp.commons_content.content_type === 'pdf') {
               pdfs.push({
                 title: comp.title || comp.commons_content.content_name || 'PDF',
                 contentId: comp.commons_content.content_id,
@@ -94,9 +116,35 @@
               return;
             }
 
-            // ── 방법 2: 파일 첨부 (직접 업로드) ──
-            // 다양한 구조 탐색: attach_file, file_content, file_info 등
-            const fileObj =
+            // ── 2. type=text (Canvas 페이지) + description에 PDF 첨부 ──
+            // 교수가 페이지에 파일을 첨부한 경우 description HTML 안에 다운로드 링크 존재
+            // 예: <a class="description_file_attachment" href="/courses/49563/files/2926728/download?download_frd=1">
+            if (comp.type === 'text' && comp.description) {
+              try {
+                var parser = new DOMParser();
+                var doc = parser.parseFromString(comp.description, 'text/html');
+                var links = doc.querySelectorAll('a.description_file_attachment');
+                links.forEach(function (link) {
+                  var fnameEl = link.querySelector('.description_file_name');
+                  var fname = fnameEl ? fnameEl.textContent.trim() : (link.textContent.trim());
+                  var href = link.getAttribute('href');
+                  if (fname.toLowerCase().endsWith('.pdf') && href) {
+                    pdfs.push({
+                      title: comp.title || fname.replace(/\.pdf$/i, ''),
+                      contentId: 'cp_' + (comp.component_id || comp.assignment_id || Date.now()),
+                      section: section.title,
+                      subsection: sub.title,
+                      type: 'canvas_file',
+                      directUrl: href, // 상대 URL: /courses/.../files/.../download?download_frd=1
+                    });
+                  }
+                });
+              } catch (e) { /* DOMParser 실패 무시 */ }
+              return;
+            }
+
+            // ── 3. 파일 첨부 컴포넌트 (다양한 구조) ──
+            var fileObj =
               comp.attach_file ||
               comp.file_content ||
               comp.file_info ||
@@ -104,39 +152,18 @@
               null;
 
             if (fileObj) {
-              const fname = fileObj.file_name || fileObj.name || fileObj.display_name || '';
+              var fname = fileObj.file_name || fileObj.name || fileObj.display_name || '';
               if (fname.toLowerCase().endsWith('.pdf')) {
                 pdfs.push({
                   title: comp.title || fname.replace(/\.pdf$/i, ''),
-                  contentId: `file_${comp.id || fileObj.file_id || fileObj.id || Date.now()}`,
+                  contentId: 'file_' + (comp.id || fileObj.file_id || fileObj.id || Date.now()),
                   section: section.title,
                   subsection: sub.title,
-                  type: 'file',
+                  type: 'canvas_file',
                   directUrl: fileObj.download_url || fileObj.url || null,
                 });
-                return;
               }
             }
-
-            // ── 방법 3: 컴포넌트 자체가 파일 타입 ──
-            if (
-              (comp.content_type === 'file' || comp.type === 'file' ||
-               comp.xn_component_type === 'attach' || comp.component_type === 'file') &&
-              comp.id
-            ) {
-              const fname = comp.file_name || comp.name || comp.original_name || comp.title || '';
-              if (fname.toLowerCase().endsWith('.pdf')) {
-                pdfs.push({
-                  title: comp.title || fname.replace(/\.pdf$/i, ''),
-                  contentId: `file_${comp.id}`,
-                  section: section.title,
-                  subsection: sub.title,
-                  type: 'file',
-                  directUrl: comp.download_url || comp.url || null,
-                });
-              }
-            }
-
           });
         });
       });
@@ -144,6 +171,52 @@
 
     return pdfs;
   }
+
+  // ────────────────────────────────────────────────────────
+  // DOM 기반 PDF 추출 (강의자료실 / courseresource)
+  //
+  // 구조:
+  //   .xn-resource-item[aria-label="제목"]
+  //     .xnri-description.pdf   ← PDF 타입 확인
+  //     .xnri-thumbnail-commons[src="...CommonsCore2/v2/contents/{uuid}.jpg"]
+  // ────────────────────────────────────────────────────────
+
+  function extractFromCourseResource(iframeDoc) {
+    var pdfs = [];
+    var items = iframeDoc.querySelectorAll('.xn-resource-item');
+
+    items.forEach(function (item) {
+      // PDF 타입인지 확인
+      var descEl = item.querySelector('.xnri-description.pdf');
+      if (!descEl) return;
+
+      var title = item.getAttribute('aria-label') || '';
+
+      // thumbnail src에서 content_id 추출
+      // URL 패턴: .../CommonsCore2/v2/contents/{uuid}.jpg  또는  .../contents/{hex_id}.jpg
+      var img = item.querySelector('.xnri-thumbnail-commons, img[src*="contents/"]');
+      if (!img) return;
+
+      var match = img.src.match(/contents\/([^.?/]+)/);
+      if (!match) return;
+
+      var contentId = match[1];
+
+      pdfs.push({
+        title: title,
+        contentId: contentId,
+        section: '강의자료실',
+        subsection: '',
+        type: 'commons',
+      });
+    });
+
+    return pdfs;
+  }
+
+  // ────────────────────────────────────────────────────────
+  // 결과 전송
+  // ────────────────────────────────────────────────────────
 
   function sendResult(data) {
     document.dispatchEvent(
