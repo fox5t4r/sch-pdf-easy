@@ -211,7 +211,7 @@
       if (pdf.resourceId && pdf.userId && pdf.lxCourseId) {
         const lxUrl = `https://medlms.sch.ac.kr/learningx/api/v1/courses/${pdf.lxCourseId}/resources/${pdf.resourceId}/progress/force` +
           `?user_id=${encodeURIComponent(pdf.userId)}` +
-          `&content_id=${encodeURIComponent(pdf.contentId)}` +
+          `&content_id=${encodeURIComponent(pdf.lxContentId || pdf.contentId)}` +
           `&content_type=${pdf.ext || 'pdf'}`;
         console.log('[SCH PDF Easy] LX download URL:', lxUrl);
         return lxUrl;

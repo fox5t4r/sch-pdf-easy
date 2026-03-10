@@ -203,6 +203,28 @@
   }
 
   // ────────────────────────────────────────────────────────
+  // Canvas API로 login_id(학번) 조회
+  // ────────────────────────────────────────────────────────
+
+  async function fetchCanvasLoginId() {
+    if (_lxCache.loginId) return _lxCache.loginId;
+    try {
+      var resp = await fetch('/api/v1/users/self', { credentials: 'include' });
+      if (!resp.ok) return null;
+      var data = await resp.json();
+      console.log('[SCH PDF Easy] Canvas /users/self:', JSON.stringify({
+        id: data.id, login_id: data.login_id, sis_user_id: data.sis_user_id,
+      }));
+      var id = data.login_id || data.sis_user_id || null;
+      if (id) _lxCache.loginId = String(id);
+      return _lxCache.loginId || null;
+    } catch (e) {
+      console.warn('[SCH PDF Easy] Canvas users/self 실패:', e.message);
+      return null;
+    }
+  }
+
+  // ────────────────────────────────────────────────────────
   // LX API 직접 호출 (리소스 목록 취득)
   // ────────────────────────────────────────────────────────
 
@@ -236,6 +258,12 @@
     var lxCtx = getLxContext(iframeDoc);
     console.log('[SCH PDF Easy] LX context:', JSON.stringify(lxCtx));
 
+    // login_id(학번) 조회 — window.ENV에 없는 경우 Canvas API로 보완
+    if (!lxCtx.userId || !/^\d{7,}$/.test(lxCtx.userId)) {
+      var canvasLoginId = await fetchCanvasLoginId();
+      if (canvasLoginId) lxCtx.userId = canvasLoginId;
+    }
+
     // 인터셉트로 캡처 못 했으면 직접 호출
     if (!_lxCache.resources && lxCtx.courseId) {
       await fetchLxResources(lxCtx.courseId);
@@ -260,17 +288,28 @@
       if (!match) return;
       var contentId = match[1];
 
-      var resourceId = getResourceIdFromCache(contentId, title) || getResourceIdFromDom(item);
+      var cachedRes = findCachedResource(contentId, title);
+      var resourceId = (cachedRes ? String(cachedRes.resource_id || '') : '') || getResourceIdFromDom(item);
+
+      // commons_content.content_id = LX API가 실제로 쓰는 content_id (UUID와 다를 수 있음)
+      var lxContentId = null;
+      if (cachedRes && cachedRes.commons_content) {
+        var cc = cachedRes.commons_content;
+        lxContentId = cc.content_id || cc.xn_id || cc.xnid || null;
+        console.log('[SCH PDF Easy] commons_content:', JSON.stringify(cc).slice(0, 300));
+      }
 
       console.log('[SCH PDF Easy] item[' + idx + ']:', {
         title: title,
         contentId: contentId,
+        lxContentId: lxContentId,
         resourceId: resourceId,
       });
 
       files.push({
         title: title,
         contentId: contentId,
+        lxContentId: lxContentId,
         section: '강의자료실',
         subsection: '',
         type: 'lx_resource',
@@ -330,8 +369,8 @@
   // resourceId 탐색
   // ────────────────────────────────────────────────────────
 
-  // LX API 캐시에서 contentId/title로 resourceId 찾기
-  function getResourceIdFromCache(contentId, title) {
+  // LX API 캐시에서 contentId/title로 매칭된 리소스 객체 반환
+  function findCachedResource(contentId, title) {
     var resources = _lxCache.resources;
     if (!resources) return null;
 
@@ -341,9 +380,8 @@
       var r = resources[i];
       for (var k = 0; k < idFields.length; k++) {
         if (r[idFields[k]] === contentId) {
-          var rid = r.id || r.resource_id;
-          console.log('[SCH PDF Easy] resourceId 캐시 매핑 (' + idFields[k] + '):', rid);
-          return rid != null ? String(rid) : null;
+          console.log('[SCH PDF Easy] resourceId 캐시 매핑 (' + idFields[k] + '):', r.resource_id);
+          return r;
         }
       }
     }
@@ -351,9 +389,8 @@
     // title 기준 폴백
     for (var j = 0; j < resources.length; j++) {
       if (resources[j].title === title || resources[j].name === title) {
-        var rid2 = resources[j].id || resources[j].resource_id;
-        console.log('[SCH PDF Easy] resourceId 타이틀 매핑:', rid2);
-        return rid2 != null ? String(rid2) : null;
+        console.log('[SCH PDF Easy] resourceId 타이틀 매핑:', resources[j].resource_id);
+        return resources[j];
       }
     }
 
