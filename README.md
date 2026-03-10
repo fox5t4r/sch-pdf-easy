@@ -1,37 +1,37 @@
 # SCH PDF Easy Downloader
 
-Chrome extension for bulk-downloading lecture PDFs and PPTs from Soonchunhyang University LMS ([medlms.sch.ac.kr](https://medlms.sch.ac.kr)).
+순천향대학교 LMS([medlms.sch.ac.kr](https://medlms.sch.ac.kr))의 강의 자료를 일괄 다운로드하는 Chrome 확장 프로그램입니다.
 
 ![Screenshot](./screenshot.png)
 
 ---
 
-## Features
+## 기능
 
-- **Two page types supported**
-  - 강의콘텐츠 (`external_tools/1`) — scans React/Redux state for attached files
-  - 강의자료실 (`external_tools/2`) — falls back to DOM scanning when Redux is unavailable
-- **Three file sources detected**
-  - LTI commons content (PDF/PPT viewer embeds)
-  - Canvas page attachments (`<a class="description_file_attachment">`)
-  - Direct file uploads (various component structures)
-- **PDF and PPT/PPTX** both supported
-- **5 concurrent downloads** with live progress bar
-- **Download history** — distinguishes new files from already-downloaded ones, persisted across sessions
-- Skips already-downloaded files unless you explicitly use 전체 다운로드
+- **두 가지 페이지 타입 지원**
+  - 강의콘텐츠 (`external_tools/1`) — React/Redux 상태에서 파일 목록 추출
+  - 강의자료실 (`external_tools/2`) — Redux 접근 불가 시 DOM 직접 스캔
+- **세 가지 파일 소스 탐지**
+  - LTI 콘텐츠 플레이어 (commons_content 임베드)
+  - Canvas 페이지 첨부 파일 (`<a class="description_file_attachment">`)
+  - 직접 업로드한 파일 (다양한 컴포넌트 구조)
+- **PDF 및 PPT/PPTX** 모두 지원
+- **최대 5개 병렬 다운로드** + 실시간 진행 바
+- **다운로드 기록 관리** — 이미 받은 파일과 새 파일을 구분, 세션 간 유지
+- 이미 받은 파일은 건너뜀 (전체 다운로드 시 제외)
 
 ---
 
-## Installation
+## 설치
 
-No build step required.
+빌드 과정 없음.
 
-1. Go to the [Releases](https://github.com/fox5t4r/sch-pdf-easy/releases) page and download the latest zip
-2. Unzip it
-3. Open Chrome → `chrome://extensions` → enable **Developer mode**
-4. Click **Load unpacked** and select the unzipped folder
+1. [Releases](https://github.com/fox5t4r/sch-pdf-easy/releases) 페이지에서 최신 zip 다운로드
+2. 압축 해제
+3. Chrome → `chrome://extensions` → **개발자 모드** 활성화
+4. **압축해제된 확장 프로그램을 로드합니다** → 압축 해제한 폴더 선택
 
-Or clone and load directly:
+또는 클론 후 바로 로드:
 
 ```bash
 git clone https://github.com/fox5t4r/sch-pdf-easy.git
@@ -39,65 +39,65 @@ git clone https://github.com/fox5t4r/sch-pdf-easy.git
 
 ---
 
-## Usage
+## 사용법
 
-1. Log in to [medlms.sch.ac.kr](https://medlms.sch.ac.kr) and navigate to a course's **강의콘텐츠** or **강의자료실** page
-2. Click the **PDF** button in the bottom-right corner — the panel opens and auto-scans
-3. Click **새 파일** to download only undownloaded files, or **전체** to download everything
-4. Files are saved to `Downloads/SCH_PDF/`
+1. [medlms.sch.ac.kr](https://medlms.sch.ac.kr)에 로그인 후 강의의 **강의콘텐츠** 또는 **강의자료실** 페이지 접속
+2. 우측 하단 **PDF** 버튼 클릭 — 패널이 열리면서 자동으로 스캔 시작
+3. **새 파일** — 아직 받지 않은 파일만 다운로드 / **전체** — 전부 다운로드
+4. 파일은 `다운로드/SCH_PDF/` 폴더에 저장됨
 
-If the scan fails on the first try, click the **스캔** button to retry manually.
+스캔이 실패하면 **스캔** 버튼으로 수동 재시도.
 
 ---
 
-## Project Structure
+## 파일 구조
 
 ```
 sch-pdf-easy/
-├── manifest.json      # MV3 manifest — permissions, content script config
-├── background.js      # Service worker — chrome.downloads, chrome.storage
-├── content.js         # Isolated world — UI panel, scan orchestration, download logic
-├── injector.js        # MAIN world — React Fiber traversal, Redux store access, DOM fallback
-├── style.css          # Extension UI styles
+├── manifest.json      # MV3 설정 — 권한, 콘텐츠 스크립트
+├── background.js      # Service Worker — chrome.downloads, chrome.storage
+├── content.js         # Isolated world — UI 패널, 스캔 조율, 다운로드 로직
+├── injector.js        # MAIN world — React Fiber 탐색, Redux 접근, DOM 폴백
+├── style.css          # 확장 프로그램 UI 스타일
 └── icons/
     ├── icon16.png
     ├── icon48.png
     └── icon128.png
 ```
 
-**Architecture overview:**
+**동작 흐름:**
 
 ```
 content.js  ──(CustomEvent '__SPE_SCAN_REQUEST')──▶  injector.js
-                                                         │
-                                              coursebuilder: Redux store
-                                              courseresource: DOM scan
-                                                         │
-content.js  ◀─(CustomEvent '__SPE_SCAN_RESULT')──────────┘
+                                                          │
+                                               강의콘텐츠: Redux Store 탐색
+                                               강의자료실: DOM 스캔
+                                                          │
+content.js  ◀─(CustomEvent '__SPE_SCAN_RESULT')───────────┘
     │
-    ├─ merge with Canvas File API results
-    └─ send download requests ──▶ background.js ──▶ chrome.downloads
+    ├─ Canvas File API 결과와 병합 (contentId 기준 중복 제거)
+    └─ 다운로드 요청 ──▶ background.js ──▶ chrome.downloads
 ```
 
 ---
 
-## Permissions
+## 권한
 
-| Permission | Purpose |
+| 권한 | 용도 |
 |---|---|
-| `downloads` | Save files to `Downloads/SCH_PDF/` |
-| `storage` | Persist download history across sessions |
-| `activeTab` | Access the current LMS tab's DOM |
-| `medlms.sch.ac.kr/*` | Scan lecture pages, call Canvas File API |
-| `commons.sch.ac.kr/*` | Fetch download URLs from the commons content API |
+| `downloads` | 파일을 `다운로드/SCH_PDF/`에 저장 |
+| `storage` | 다운로드 기록 세션 간 유지 |
+| `activeTab` | 현재 LMS 탭의 DOM 접근 |
+| `medlms.sch.ac.kr/*` | 강의 페이지 스캔, Canvas File API 호출 |
+| `commons.sch.ac.kr/*` | 콘텐츠 다운로드 URL 조회 (content.php API) |
 
 ---
 
-## Notes
+## 주의사항
 
-- Only works on Soonchunhyang University LMS. You must be logged in.
-- Only downloads files the server permits — server-side access restrictions are respected.
+- 순천향대학교 LMS 전용. 반드시 로그인된 상태에서 사용.
+- 서버 측 접근 제한이 있는 파일은 다운로드되지 않음.
 
-## License
+## 라이선스
 
 MIT
