@@ -1,16 +1,19 @@
 /**
- * SCH PDF Easy Downloader - Content Script
+ * SCH PDF Easy Downloader - Content Script (ISOLATED world)
  *
  * medlms.sch.ac.kr 강의콘텐츠 페이지에서 동작합니다.
- * LTI iframe 내부의 Redux Store에서 PDF 목록을 추출하고,
- * commons.sch.ac.kr의 content.php API로 다운로드 URL을 구성합니다.
  *
- * 구조:
- *   medlms.sch.ac.kr (Canvas LMS)
- *     └─ iframe#tool_content (LTI coursebuilder)
- *          └─ React App + Redux Store
- *               └─ sections → subsections → units → components
- *                    └─ commons_content.content_id → content.php API → download URL
+ * [핵심 아키텍처]
+ * Chrome Content Script는 격리된 세계(isolated world)에서 실행되므로
+ * 페이지의 React/Redux 변수(__reactFiber 등)에 직접 접근할 수 없습니다.
+ *
+ * 따라서 두 개의 스크립트로 분리합니다:
+ *   - injector.js (MAIN world): React Fiber 탐색 → Redux Store에서 PDF 목록 추출
+ *   - content.js (ISOLATED world, 이 파일): UI 관리 + Chrome API(downloads, storage) 호출
+ *
+ * 통신 방식: CustomEvent를 통한 양방향 메시징
+ *   content.js → injector.js : '__SPE_SCAN_REQUEST' 이벤트
+ *   injector.js → content.js : '__SPE_SCAN_RESULT' 이벤트 (detail에 PDF 목록)
  */
 
 (function () {
@@ -20,13 +23,14 @@
   const CONTENT_API = `${COMMONS_BASE}/viewer/ssplayer/uniplayer_support/content.php`;
 
   let isRunning = false;
+  let currentPDFs = [];
+  let downloadedFiles = {};
 
   // ──────────────────────────────────────────────
   // 1. UI: 다운로드 버튼 삽입
   // ──────────────────────────────────────────────
 
   function injectUI() {
-    // 이미 삽입되었으면 무시
     if (document.getElementById('sch-pdf-easy-container')) return;
 
     const container = document.createElement('div');
@@ -61,7 +65,7 @@
     `;
     document.body.appendChild(container);
 
-    // FAB 버튼 클릭 → 패널 토글
+    // FAB 버튼 → 패널 토글
     document.getElementById('sch-pdf-easy-fab').addEventListener('click', () => {
       const panel = document.getElementById('sch-pdf-easy-panel');
       const fab = document.getElementById('sch-pdf-easy-fab');
@@ -84,69 +88,37 @@
   }
 
   // ──────────────────────────────────────────────
-  // 2. Redux Store에서 PDF 목록 추출
+  // 2. injector.js와 CustomEvent 통신
   // ──────────────────────────────────────────────
 
-  function getReduxStore() {
-    const iframe = document.getElementById('tool_content');
-    if (!iframe) return null;
+  function requestScanFromInjector() {
+    return new Promise((resolve) => {
+      let resolved = false;
 
-    let iframeDoc;
-    try {
-      iframeDoc = iframe.contentDocument;
-    } catch (e) {
-      return null;
-    }
-    if (!iframeDoc) return null;
-
-    const root = iframeDoc.getElementById('root');
-    if (!root) return null;
-
-    const fiberKey = Object.keys(root).find(
-      (k) => k.startsWith('__reactFiber') || k.startsWith('__reactContainer')
-    );
-    if (!fiberKey) return null;
-
-    function findStore(node, depth) {
-      if (!node || depth > 25) return null;
-      if (node.memoizedProps && node.memoizedProps.store) {
-        return node.memoizedProps.store;
+      function onResult(e) {
+        if (resolved) return;
+        resolved = true;
+        document.removeEventListener('__SPE_SCAN_RESULT', onResult);
+        resolve(e.detail);
       }
-      return findStore(node.child, depth + 1) || findStore(node.sibling, depth + 1);
-    }
 
-    return findStore(root[fiberKey], 0);
-  }
+      document.addEventListener('__SPE_SCAN_RESULT', onResult);
 
-  function extractPDFs(store) {
-    const state = store.getState();
-    const sections = state.sections.sections;
-    const pdfs = [];
+      // injector.js에 스캔 요청 전송
+      document.dispatchEvent(new CustomEvent('__SPE_SCAN_REQUEST'));
 
-    sections.forEach((section) => {
-      if (!section.subsections) return;
-      section.subsections.forEach((sub) => {
-        if (!sub.units) return;
-        sub.units.forEach((unit) => {
-          if (!unit.components) return;
-          unit.components.forEach((comp) => {
-            if (
-              comp.commons_content &&
-              comp.commons_content.content_type === 'pdf'
-            ) {
-              pdfs.push({
-                title: comp.title,
-                contentId: comp.commons_content.content_id,
-                section: section.title,
-                subsection: sub.title,
-              });
-            }
+      // 타임아웃: 15초 후에도 응답 없으면 실패
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          document.removeEventListener('__SPE_SCAN_RESULT', onResult);
+          resolve({
+            success: false,
+            error: 'injector.js로부터 응답이 없습니다. 페이지를 새로고침 해주세요.',
           });
-        });
-      });
+        }
+      }, 15000);
     });
-
-    return pdfs;
   }
 
   // ──────────────────────────────────────────────
@@ -166,16 +138,13 @@
       return `${COMMONS_BASE}${downloadUri.textContent}`;
     }
 
-    // fallback: 기본 패턴으로 구성
+    // fallback: 기본 패턴
     return `${COMMONS_BASE}/index.php?module=xn_media_content2013&act=dispXn_media_content2013DownloadWebFile&site_id=sch1000001&content_id=${contentId}&web_storage_id=301&file_subpath=contents%5Cweb_files%5Coriginal.pdf`;
   }
 
   // ──────────────────────────────────────────────
   // 4. 스캔 / 다운로드 로직
   // ──────────────────────────────────────────────
-
-  let currentPDFs = [];
-  let downloadedFiles = {};
 
   async function scanForPDFs() {
     const statusEl = document.getElementById('spe-status');
@@ -189,21 +158,25 @@
     dlBtn.disabled = true;
     dlAllBtn.disabled = true;
 
-    // iframe 로딩 대기 (최대 10초)
-    let store = null;
-    for (let i = 0; i < 20; i++) {
-      store = getReduxStore();
-      if (store) break;
-      await sleep(500);
+    // iframe 로딩 대기 후 injector.js에 스캔 요청
+    // (iframe이 아직 로드 안 됐을 수 있으므로 최대 3회 재시도)
+    let result = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) {
+        statusEl.textContent = `🔍 재시도 중... (${attempt + 1}/3)`;
+        await sleep(2000);
+      }
+      result = await requestScanFromInjector();
+      if (result.success) break;
     }
 
-    if (!store) {
-      statusEl.textContent = '⚠️ LMS 콘텐츠를 찾을 수 없습니다. 페이지를 새로고침 해주세요.';
+    if (!result || !result.success) {
+      statusEl.textContent = `⚠️ ${result?.error || 'PDF를 찾을 수 없습니다.'}`;
       statusEl.className = 'spe-status spe-status-error';
       return;
     }
 
-    currentPDFs = extractPDFs(store);
+    currentPDFs = result.pdfs;
 
     if (currentPDFs.length === 0) {
       statusEl.textContent = '📭 이 과목에 PDF 자료가 없습니다.';
@@ -238,7 +211,6 @@
       `;
       listEl.appendChild(item);
 
-      // 개별 다운로드 버튼
       item.querySelector('.spe-pdf-item-dl').addEventListener('click', async (e) => {
         const btn = e.currentTarget;
         btn.disabled = true;
@@ -277,7 +249,6 @@
         );
       });
 
-      // UI 업데이트
       downloadedFiles[pdf.contentId] = {
         title: pdf.title,
         downloadedAt: new Date().toISOString(),
@@ -290,19 +261,15 @@
   async function downloadNew() {
     if (isRunning) return;
     isRunning = true;
-
     const newPDFs = currentPDFs.filter((p) => !downloadedFiles[p.contentId]);
     await downloadBatch(newPDFs);
-
     isRunning = false;
   }
 
   async function downloadAll() {
     if (isRunning) return;
     isRunning = true;
-
     await downloadBatch(currentPDFs);
-
     isRunning = false;
   }
 
@@ -328,14 +295,17 @@
       try {
         await downloadSingle(pdf);
 
-        // 목록 아이템 업데이트
         const item = document.querySelector(
           `[data-content-id="${pdf.contentId}"]`
         );
         if (item) {
           item.textContent = '✅';
-          item.closest('.spe-pdf-item').className = 'spe-pdf-item spe-downloaded';
-          item.closest('.spe-pdf-item').querySelector('.spe-pdf-item-icon').textContent = '✅';
+          const pdfItem = item.closest('.spe-pdf-item');
+          if (pdfItem) {
+            pdfItem.className = 'spe-pdf-item spe-downloaded';
+            const icon = pdfItem.querySelector('.spe-pdf-item-icon');
+            if (icon) icon.textContent = '✅';
+          }
         }
       } catch (err) {
         console.error(`[SCH PDF Easy] 실패: ${pdf.title}`, err);
@@ -346,7 +316,7 @@
       progressFill.style.width = `${pct}%`;
       progressText.textContent = `${completed}/${total}`;
 
-      // 서버 부하 방지를 위한 딜레이 (1초)
+      // 서버 부하 방지 딜레이 (1초)
       if (completed < total) {
         await sleep(1000);
       }
@@ -355,7 +325,6 @@
     statusEl.textContent = `✅ ${completed}개 파일 다운로드 완료!`;
     statusEl.className = 'spe-status spe-status-ok';
 
-    // 새 PDF 수 갱신
     const newCount = currentPDFs.filter(
       (p) => !downloadedFiles[p.contentId]
     ).length;
@@ -410,10 +379,8 @@
   // ──────────────────────────────────────────────
 
   function init() {
-    // 강의콘텐츠 페이지인지 확인
     if (!window.location.href.includes('external_tools')) return;
 
-    // DOM 로딩 후 UI 삽입
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', injectUI);
     } else {
