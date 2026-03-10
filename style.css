@@ -1,63 +1,68 @@
-/* ──────────────────────────────────────────────
-   SCH PDF Easy Downloader - Styles
-   ────────────────────────────────────────────── */
+/* SCH PDF Easy Downloader — Developer Tool UI */
 
-/* FAB (Floating Action Button) */
+/* FAB */
 #sch-pdf-easy-fab {
   position: fixed;
-  bottom: 24px;
-  right: 24px;
-  z-index: 99999;
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  border: none;
-  background: linear-gradient(135deg, #1a73e8, #0d47a1);
-  color: white;
-  font-size: 24px;
+  bottom: 20px;
+  right: 20px;
+  z-index: 2147483647;
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #24292f;
+  color: #f0f6fc;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
   cursor: pointer;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+  transition: background 0.15s, opacity 0.15s, transform 0.15s;
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, monospace;
 }
 
 #sch-pdf-easy-fab:hover {
-  transform: scale(1.1);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+  background: #32383f;
 }
 
 #sch-pdf-easy-fab.spe-hidden {
-  transform: scale(0);
   opacity: 0;
+  transform: scale(0.85);
   pointer-events: none;
 }
 
 /* Panel */
 #sch-pdf-easy-panel {
   position: fixed;
-  bottom: 24px;
-  right: 24px;
-  z-index: 99999;
-  width: 420px;
-  max-height: 80vh;
+  bottom: 20px;
+  right: 20px;
+  z-index: 2147483647;
+  width: 380px;
+  max-height: 78vh;
   background: #ffffff;
-  border-radius: 16px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(140, 149, 159, 0.2);
   display: flex;
   flex-direction: column;
   overflow: hidden;
   opacity: 0;
-  transform: translateY(20px) scale(0.95);
+  transform: translateY(6px);
   pointer-events: none;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  font-family: 'Noto Sans KR', -apple-system, BlinkMacSystemFont, sans-serif;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR",
+    Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  color: #24292f;
+  line-height: 1.4;
 }
 
 #sch-pdf-easy-panel.spe-visible {
   opacity: 1;
-  transform: translateY(0) scale(1);
+  transform: translateY(0);
   pointer-events: all;
 }
 
@@ -65,92 +70,115 @@
 .spe-header {
   display: flex;
   align-items: center;
-  padding: 16px 20px;
-  background: linear-gradient(135deg, #1a73e8, #0d47a1);
-  color: white;
+  padding: 0 14px;
+  height: 40px;
+  background: #24292f;
+  color: #f0f6fc;
   gap: 8px;
-}
-
-.spe-logo {
-  font-size: 22px;
+  flex-shrink: 0;
 }
 
 .spe-title {
   flex: 1;
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: -0.3px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #f0f6fc;
+  letter-spacing: 0;
+}
+
+.spe-version {
+  font-size: 11px;
+  color: #8b949e;
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, monospace;
+  padding: 1px 6px;
+  border: 1px solid #30363d;
+  border-radius: 10px;
 }
 
 .spe-icon-btn {
   background: none;
   border: none;
-  color: inherit;
+  color: #8b949e;
   cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 6px;
-  font-size: 14px;
-  transition: background 0.2s;
+  padding: 4px 5px;
+  border-radius: 4px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.1s, background 0.1s;
 }
 
 .spe-icon-btn:hover {
-  background: rgba(255, 255, 255, 0.2);
+  color: #f0f6fc;
+  background: rgba(255, 255, 255, 0.1);
 }
 
 /* Status */
 .spe-status {
-  padding: 12px 20px;
-  font-size: 13px;
-  color: #5f6368;
-  background: #f8f9fa;
-  border-bottom: 1px solid #e8eaed;
+  padding: 0 14px;
+  height: 34px;
+  font-size: 12px;
+  color: #57606a;
+  background: #f6f8fa;
+  border-bottom: 1px solid #d0d7de;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
 }
 
-.spe-status-ok {
-  color: #1e8e3e;
-  background: #e6f4ea;
+.spe-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #d0d7de;
+  flex-shrink: 0;
 }
 
-.spe-status-warn {
-  color: #e37400;
-  background: #fef7e0;
-}
+.spe-status-ok { color: #1a7f37; }
+.spe-status-ok .spe-status-dot { background: #2da44e; }
 
-.spe-status-error {
-  color: #d93025;
-  background: #fce8e6;
-}
+.spe-status-warn { color: #7d4e00; }
+.spe-status-warn .spe-status-dot { background: #bf8700; }
+
+.spe-status-error { color: #cf222e; }
+.spe-status-error .spe-status-dot { background: #cf222e; }
 
 /* Progress */
 .spe-progress-container {
   display: flex;
   align-items: center;
-  padding: 8px 20px;
-  gap: 12px;
-  background: #f8f9fa;
+  padding: 0 14px;
+  height: 26px;
+  gap: 10px;
+  background: #f6f8fa;
+  border-bottom: 1px solid #d0d7de;
+  flex-shrink: 0;
 }
 
 .spe-progress-bar {
   flex: 1;
-  height: 6px;
-  background: #e8eaed;
-  border-radius: 3px;
+  height: 3px;
+  background: #e6edf3;
+  border-radius: 2px;
   overflow: hidden;
 }
 
 .spe-progress-fill {
   height: 100%;
   width: 0%;
-  background: linear-gradient(90deg, #1a73e8, #34a853);
-  border-radius: 3px;
+  background: #2da44e;
+  border-radius: 2px;
   transition: width 0.3s ease;
 }
 
 .spe-progress-text {
-  font-size: 12px;
-  color: #5f6368;
+  font-size: 11px;
+  color: #57606a;
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, monospace;
   white-space: nowrap;
-  min-width: 40px;
+  min-width: 36px;
   text-align: right;
 }
 
@@ -158,35 +186,51 @@
 .spe-pdf-list {
   flex: 1;
   overflow-y: auto;
-  max-height: 45vh;
-  padding: 8px 0;
+  max-height: 44vh;
+}
+
+.spe-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 14px;
+  color: #8b949e;
+  font-size: 12px;
+  gap: 8px;
 }
 
 .spe-pdf-item {
   display: flex;
   align-items: center;
-  padding: 10px 20px;
-  gap: 12px;
-  transition: background 0.15s;
-  border-bottom: 1px solid #f1f3f4;
+  padding: 7px 14px;
+  gap: 9px;
+  border-bottom: 1px solid #eaeef2;
+  transition: background 0.1s;
+}
+
+.spe-pdf-item:last-child {
+  border-bottom: none;
 }
 
 .spe-pdf-item:hover {
-  background: #f8f9fa;
+  background: #f6f8fa;
 }
 
 .spe-pdf-item.spe-downloaded {
-  opacity: 0.6;
+  opacity: 0.5;
 }
 
-.spe-pdf-item.spe-new {
-  background: #f0f7ff;
-}
-
-.spe-pdf-item-icon {
-  font-size: 18px;
+.spe-pdf-status-icon {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #8b949e;
 }
+
+.spe-pdf-status-icon.new { color: #0969da; }
+.spe-pdf-status-icon.done { color: #2da44e; }
 
 .spe-pdf-item-info {
   flex: 1;
@@ -194,104 +238,129 @@
 }
 
 .spe-pdf-item-title {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
-  color: #202124;
+  color: #24292f;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.spe-pdf-item.spe-downloaded .spe-pdf-item-title {
+  color: #57606a;
+}
+
 .spe-pdf-item-meta {
   font-size: 11px;
-  color: #80868b;
-  margin-top: 2px;
+  color: #8b949e;
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .spe-pdf-item-dl {
   flex-shrink: 0;
-  font-size: 16px;
-  padding: 6px;
-  border-radius: 50%;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 4px;
+  color: #57606a;
+  border: 1px solid transparent;
 }
 
 .spe-pdf-item-dl:hover {
-  background: #e8eaed !important;
+  background: #f3f4f6 !important;
+  border-color: #d0d7de;
+  color: #24292f;
 }
 
 /* Button Group */
 .spe-btn-group {
   display: flex;
-  gap: 8px;
-  padding: 16px 20px;
-  border-top: 1px solid #e8eaed;
+  gap: 6px;
+  padding: 10px 14px;
+  border-top: 1px solid #d0d7de;
+  background: #f6f8fa;
+  flex-shrink: 0;
 }
 
 .spe-btn {
   flex: 1;
-  padding: 10px 12px;
-  border: none;
-  border-radius: 10px;
-  font-size: 13px;
-  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background 0.1s, border-color 0.1s;
   white-space: nowrap;
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
 }
 
 .spe-btn:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
 .spe-btn-primary {
-  background: linear-gradient(135deg, #1a73e8, #1765cc);
-  color: white;
+  background: #2da44e;
+  color: #ffffff;
+  border: 1px solid rgba(31, 35, 40, 0.15);
 }
 
 .spe-btn-primary:hover:not(:disabled) {
-  background: linear-gradient(135deg, #1765cc, #0d47a1);
-  box-shadow: 0 2px 8px rgba(26, 115, 232, 0.3);
+  background: #2c974b;
 }
 
 .spe-btn-secondary {
-  background: #f1f3f4;
-  color: #5f6368;
+  background: #f6f8fa;
+  color: #24292f;
+  border: 1px solid #d0d7de;
 }
 
 .spe-btn-secondary:hover:not(:disabled) {
-  background: #e8eaed;
+  background: #f3f4f6;
+  border-color: #b9bfc8;
 }
 
 .spe-btn-outline {
-  background: white;
-  color: #1a73e8;
-  border: 1.5px solid #1a73e8;
+  background: #ffffff;
+  color: #24292f;
+  border: 1px solid #d0d7de;
 }
 
 .spe-btn-outline:hover:not(:disabled) {
-  background: #f0f7ff;
+  background: #f6f8fa;
 }
 
 /* Footer */
 .spe-footer {
-  padding: 8px 20px 12px;
-  text-align: center;
+  padding: 5px 14px 7px;
+  background: #f6f8fa;
+  border-top: 1px solid #eaeef2;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
 }
 
 .spe-link-btn {
   background: none;
   border: none;
-  color: #80868b;
+  color: #8b949e;
   font-size: 11px;
   cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 4px;
-  transition: color 0.2s;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-family: inherit;
+  transition: color 0.1s;
 }
 
 .spe-link-btn:hover {
-  color: #d93025;
+  color: #cf222e;
   text-decoration: underline;
 }
 
@@ -305,10 +374,10 @@
 }
 
 .spe-pdf-list::-webkit-scrollbar-thumb {
-  background: #dadce0;
+  background: #d0d7de;
   border-radius: 3px;
 }
 
 .spe-pdf-list::-webkit-scrollbar-thumb:hover {
-  background: #bdc1c6;
+  background: #b9bfc8;
 }
