@@ -4,22 +4,16 @@
  * 이 스크립트는 페이지의 MAIN world에서 실행되어
  * React/Redux 내부 변수에 직접 접근합니다.
  * 추출한 PDF 목록을 CustomEvent로 content.js(ISOLATED world)에 전달합니다.
- *
- * Content Script(isolated)에서는 __reactFiber 등 페이지 JS 속성에
- * 접근할 수 없기 때문에 이 분리가 필요합니다.
  */
 
 (function () {
   'use strict';
 
-  // content.js에서 스캔 요청을 받으면 실행
   document.addEventListener('__SPE_SCAN_REQUEST', () => {
-    console.log('[SCH PDF Easy Injector] 스캔 요청 수신');
     performScan();
   });
 
   function performScan() {
-    // iframe 찾기
     const iframe = document.getElementById('tool_content');
     if (!iframe) {
       sendResult({ success: false, error: 'iframe#tool_content을 찾을 수 없습니다.' });
@@ -45,26 +39,23 @@
       return;
     }
 
-    // React Fiber 키 찾기
     const fiberKey = Object.keys(root).find(
       (k) => k.startsWith('__reactFiber') || k.startsWith('__reactContainer')
     );
     if (!fiberKey) {
-      sendResult({ success: false, error: 'React Fiber를 찾을 수 없습니다. (페이지 로딩 중?)' });
+      sendResult({ success: false, error: 'React Fiber를 찾을 수 없습니다.' });
       return;
     }
 
-    // Redux Store 찾기
     const store = findStore(root[fiberKey], 0);
     if (!store) {
       sendResult({ success: false, error: 'Redux Store를 찾을 수 없습니다.' });
       return;
     }
 
-    // PDF 목록 추출
     try {
       const state = store.getState();
-      const sections = state.sections.sections;
+      const sections = state.sections?.sections || state.section?.sections || [];
       const pdfs = extractPDFs(sections);
       sendResult({ success: true, pdfs });
     } catch (e) {
@@ -82,33 +73,79 @@
 
   function extractPDFs(sections) {
     const pdfs = [];
+
     sections.forEach((section) => {
-      if (!section.subsections) return;
-      section.subsections.forEach((sub) => {
-        if (!sub.units) return;
-        sub.units.forEach((unit) => {
-          if (!unit.components) return;
-          unit.components.forEach((comp) => {
-            if (
-              comp.commons_content &&
-              comp.commons_content.content_type === 'pdf'
-            ) {
+      const subsections = section.subsections || section.sub_sections || [];
+      subsections.forEach((sub) => {
+        const units = sub.units || [];
+        units.forEach((unit) => {
+          const components = unit.components || unit.component_list || [];
+          components.forEach((comp) => {
+
+            // ── 방법 1: commons_content (LTI 콘텐츠 PDF) ──
+            if (comp.commons_content?.content_type === 'pdf') {
               pdfs.push({
-                title: comp.title,
+                title: comp.title || comp.commons_content.content_name || 'PDF',
                 contentId: comp.commons_content.content_id,
                 section: section.title,
                 subsection: sub.title,
+                type: 'commons',
               });
+              return;
             }
+
+            // ── 방법 2: 파일 첨부 (직접 업로드) ──
+            // 다양한 구조 탐색: attach_file, file_content, file_info 등
+            const fileObj =
+              comp.attach_file ||
+              comp.file_content ||
+              comp.file_info ||
+              comp.upload_file ||
+              null;
+
+            if (fileObj) {
+              const fname = fileObj.file_name || fileObj.name || fileObj.display_name || '';
+              if (fname.toLowerCase().endsWith('.pdf')) {
+                pdfs.push({
+                  title: comp.title || fname.replace(/\.pdf$/i, ''),
+                  contentId: `file_${comp.id || fileObj.file_id || fileObj.id || Date.now()}`,
+                  section: section.title,
+                  subsection: sub.title,
+                  type: 'file',
+                  directUrl: fileObj.download_url || fileObj.url || null,
+                });
+                return;
+              }
+            }
+
+            // ── 방법 3: 컴포넌트 자체가 파일 타입 ──
+            if (
+              (comp.content_type === 'file' || comp.type === 'file' ||
+               comp.xn_component_type === 'attach' || comp.component_type === 'file') &&
+              comp.id
+            ) {
+              const fname = comp.file_name || comp.name || comp.original_name || comp.title || '';
+              if (fname.toLowerCase().endsWith('.pdf')) {
+                pdfs.push({
+                  title: comp.title || fname.replace(/\.pdf$/i, ''),
+                  contentId: `file_${comp.id}`,
+                  section: section.title,
+                  subsection: sub.title,
+                  type: 'file',
+                  directUrl: comp.download_url || comp.url || null,
+                });
+              }
+            }
+
           });
         });
       });
     });
+
     return pdfs;
   }
 
   function sendResult(data) {
-    console.log('[SCH PDF Easy Injector] 결과 전송:', data.success ? `${data.pdfs?.length}개 PDF` : data.error);
     document.dispatchEvent(
       new CustomEvent('__SPE_SCAN_RESULT', { detail: data })
     );

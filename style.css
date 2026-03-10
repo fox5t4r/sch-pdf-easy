@@ -6,13 +6,13 @@
   bottom: 20px;
   right: 20px;
   z-index: 2147483647;
-  width: 36px;
-  height: 36px;
-  border-radius: 6px;
+  width: 54px;
+  height: 54px;
+  border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: #24292f;
   color: #f0f6fc;
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.3px;
   cursor: pointer;
