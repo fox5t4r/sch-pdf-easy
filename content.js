@@ -204,32 +204,15 @@
       return pdf.directUrl;
     }
 
-    // 강의자료실 (lx_resource): LearningX progress/force API 사용
-    // URL 패턴: /learningx/api/v1/courses/{lxCourseId}/resources/{resourceId}/progress/force
-    //           ?user_id={userId}&content_id={contentId}&content_type={ext}
-    if (pdf.type === 'lx_resource') {
-      if (pdf.resourceId && pdf.userId && pdf.lxCourseId) {
-        const lxUrl = `https://medlms.sch.ac.kr/learningx/api/v1/courses/${pdf.lxCourseId}/resources/${pdf.resourceId}/progress/force` +
-          `?user_id=${encodeURIComponent(pdf.userId)}` +
-          `&content_id=${encodeURIComponent(pdf.lxContentId || pdf.contentId)}` +
-          `&content_type=${pdf.ext || 'pdf'}`;
-        console.log('[SCH PDF Easy] LX download URL:', lxUrl);
-        return lxUrl;
-      }
-      // 필요한 정보 부족 → 콘솔에 출력 후 content.php로 폴백
-      console.warn('[SCH PDF Easy] lx_resource 정보 부족 — content.php 폴백:', {
-        lxCourseId: pdf.lxCourseId,
-        resourceId: pdf.resourceId,
-        userId: pdf.userId,
-        contentId: pdf.contentId,
-      });
-    }
-
     // Commons 콘텐츠: content.php XML API로 다운로드 URL 획득
-    const url = `${CONTENT_API}?content_id=${encodeURIComponent(pdf.contentId)}&_=${Date.now()}`;
+    // lx_resource는 commons_content.content_id(lxContentId)를 사용해야 정상 응답
+    const effectiveContentId = (pdf.type === 'lx_resource' && pdf.lxContentId)
+      ? pdf.lxContentId
+      : pdf.contentId;
+    const url = `${CONTENT_API}?content_id=${encodeURIComponent(effectiveContentId)}&_=${Date.now()}`;
     const response = await fetch(url);
     const text = await response.text();
-    console.log('[SCH PDF Easy] content.php 응답 (contentId=' + pdf.contentId + '):', text.substring(0, 300));
+    console.log('[SCH PDF Easy] content.php 응답 (contentId=' + effectiveContentId + '):', text.substring(0, 300));
 
     const xml = new DOMParser().parseFromString(text, 'text/xml');
     const downloadUri = xml.querySelector('content_download_uri');
@@ -238,7 +221,7 @@
     }
 
     // fallback: 구형 commons 다운로드 URL 패턴
-    return `${COMMONS_BASE}/index.php?module=xn_media_content2013&act=dispXn_media_content2013DownloadWebFile&site_id=sch1000001&content_id=${pdf.contentId}&web_storage_id=301&file_subpath=contents%5Cweb_files%5Coriginal.pdf`;
+    return `${COMMONS_BASE}/index.php?module=xn_media_content2013&act=dispXn_media_content2013DownloadWebFile&site_id=sch1000001&content_id=${effectiveContentId}&web_storage_id=301&file_subpath=contents%5Cweb_files%5Coriginal.pdf`;
   }
 
   // ──────────────────────────────────────────────

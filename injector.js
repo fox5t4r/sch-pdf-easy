@@ -211,7 +211,9 @@
     try {
       var resp = await fetch('/api/v1/users/self', { credentials: 'include' });
       if (!resp.ok) return null;
-      var data = await resp.json();
+      var raw = await resp.text();
+      // Canvas XSSI 방지: "while(1);" 접두사 제거
+      var data = JSON.parse(raw.replace(/^\s*while\s*\(\s*1\s*\)\s*;/, ''));
       console.log('[SCH PDF Easy] Canvas /users/self:', JSON.stringify({
         id: data.id, login_id: data.login_id, sis_user_id: data.sis_user_id,
       }));
