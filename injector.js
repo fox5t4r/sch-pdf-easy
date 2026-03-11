@@ -16,6 +16,7 @@
   'use strict';
 
   var _idCounter = 0;
+  var Shared = globalThis.SpeShared || {};
 
   // ────────────────────────────────────────────────────────
   // LX API 캐시 (iframe fetch 인터셉터 + 직접 호출로 채움)
@@ -75,19 +76,29 @@
       };
     }
 
-    function tryPatch() {
-      var iframe = document.getElementById('tool_content');
+    function attachIframeHooks(iframe) {
       if (!iframe) return;
       try { patchFetch(iframe.contentWindow); patchXHR(iframe.contentWindow); } catch (e) {}
+      if (iframe.__SPE_LOAD_HOOKED) return;
+      iframe.__SPE_LOAD_HOOKED = true;
       iframe.addEventListener('load', function () {
         try { patchFetch(iframe.contentWindow); patchXHR(iframe.contentWindow); } catch (e) {}
-      }, { once: true });
+      });
+    }
+
+    function tryPatch() {
+      attachIframeHooks(document.getElementById('tool_content'));
     }
 
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', tryPatch);
     } else {
       tryPatch();
+    }
+
+    if (typeof MutationObserver === 'function') {
+      var observer = new MutationObserver(tryPatch);
+      observer.observe(document.documentElement || document.body, { childList: true, subtree: true });
     }
   })();
 
@@ -141,22 +152,22 @@
     }
     if (!iframeDoc) { sendResult({ success: false, error: 'iframe document가 null입니다.' }); return; }
 
-    var root = iframeDoc.getElementById('root');
-    if (!root) { sendResult({ success: false, error: 'iframe 내부 #root를 찾을 수 없습니다.' }); return; }
-
     // ── 방법 A: Redux Store (coursebuilder / 강의콘텐츠) ──
-    var fiberKey = Object.keys(root).find(function (k) {
-      return k.startsWith('__reactFiber') || k.startsWith('__reactContainer');
-    });
-    if (fiberKey) {
-      var store = findStore(root[fiberKey], 0);
-      if (store) {
-        try {
-          var state = store.getState();
-          var sections = (state.sections && state.sections.sections) || (state.section && state.section.sections) || [];
-          sendResult({ success: true, pdfs: extractFromRedux(sections) });
-          return;
-        } catch (e) { /* Redux 파싱 실패 → DOM 스캔으로 폴백 */ }
+    var root = iframeDoc.getElementById('root');
+    if (root) {
+      var fiberKey = Object.keys(root).find(function (k) {
+        return k.startsWith('__reactFiber') || k.startsWith('__reactContainer');
+      });
+      if (fiberKey) {
+        var store = findStore(root[fiberKey], 0);
+        if (store) {
+          try {
+            var state = store.getState();
+            var sections = (state.sections && state.sections.sections) || (state.section && state.section.sections) || [];
+            sendResult({ success: true, pdfs: extractFromRedux(sections) });
+            return;
+          } catch (e) { /* Redux 파싱 실패 → DOM 스캔으로 폴백 */ }
+        }
       }
     }
 
@@ -230,15 +241,15 @@
   // ────────────────────────────────────────────────────────
 
   async function fetchLxResources(courseId) {
+    _lxCache.courseId = courseId;
+    _lxCache.resources = [];
+
     try {
       var resp = await fetch('/learningx/api/v1/courses/' + courseId + '/resources', { credentials: 'include' });
       if (!resp.ok) return;
       var data = await resp.json();
       var arr = Array.isArray(data) ? data : (data.resources || data.items || data.data || null);
-      if (arr && arr.length > 0) {
-        _lxCache.resources = arr;
-        _lxCache.courseId = courseId;
-      }
+      if (Array.isArray(arr)) _lxCache.resources = arr;
     } catch (e) { /* 무시 */ }
   }
 
@@ -250,7 +261,7 @@
     var files = [];
     var courseId = getLxCourseId();
 
-    if (!_lxCache.resources && courseId) {
+    if ((Shared.shouldRefreshLxCache ? Shared.shouldRefreshLxCache(_lxCache, courseId) : (!_lxCache.resources || _lxCache.courseId !== courseId)) && courseId) {
       await fetchLxResources(courseId);
     }
 
@@ -278,15 +289,20 @@
         lxContentId = extractContentIdFromItemFiber(item);
       }
 
-      files.push({
-        title: title,
-        contentId: contentId,
-        lxContentId: lxContentId,
-        section: '강의자료실',
-        subsection: '',
-        type: 'lx_resource',
-        ext: ext,
-      });
+      var entry = Shared.buildLxResourceEntry
+        ? Shared.buildLxResourceEntry({
+            title: title,
+            contentId: contentId,
+            lxContentId: lxContentId,
+            section: '강의자료실',
+            subsection: '',
+            ext: ext,
+          })
+        : null;
+
+      if (entry) {
+        files.push(entry);
+      }
     });
 
     return files;
