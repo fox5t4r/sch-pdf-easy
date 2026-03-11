@@ -273,6 +273,11 @@
         ? (cachedRes.commons_content.content_id || null)
         : null;
 
+      // LX API 캐시 미스 시 React fiber에서 직접 추출 시도
+      if (!lxContentId) {
+        lxContentId = extractContentIdFromItemFiber(item);
+      }
+
       files.push({
         title: title,
         contentId: contentId,
@@ -287,11 +292,53 @@
     return files;
   }
 
-  // Canvas ENV에서 course_id 추출
+  // Canvas ENV에서 course_id 추출 (URL fallback 포함)
   function getLxCourseId() {
     try {
       var env = window.ENV;
       if (env && env.course_id != null) return String(env.course_id);
+    } catch (e) { }
+    var m = window.location.pathname.match(/\/courses\/(\d+)\//);
+    return m ? m[1] : null;
+  }
+
+  // ────────────────────────────────────────────────────────
+  // .xn-resource-item React fiber에서 commons_content.content_id 추출
+  // ────────────────────────────────────────────────────────
+
+  function extractContentIdFromItemFiber(itemEl) {
+    var fiberKey = null;
+    var keys = Object.keys(itemEl);
+    for (var i = 0; i < keys.length; i++) {
+      if (keys[i].startsWith('__reactFiber') || keys[i].startsWith('__reactInternalInstance')) {
+        fiberKey = keys[i];
+        break;
+      }
+    }
+    if (!fiberKey) return null;
+
+    // DOM 요소 fiber에서 부모 컴포넌트 방향으로 올라가며 탐색
+    var fiber = itemEl[fiberKey];
+    for (var depth = 0; depth < 25 && fiber; depth++) {
+      var found = extractContentIdFromFiberNode(fiber);
+      if (found) return found;
+      fiber = fiber.return;
+    }
+    return null;
+  }
+
+  function extractContentIdFromFiberNode(fiber) {
+    var props = fiber.memoizedProps;
+    if (!props || typeof props !== 'object') return null;
+    try {
+      // 직접 commons_content
+      if (props.commons_content && props.commons_content.content_id) return props.commons_content.content_id;
+      // resource/item/data 래퍼 객체
+      var wrappers = [props.resource, props.item, props.data, props.contentData];
+      for (var i = 0; i < wrappers.length; i++) {
+        var w = wrappers[i];
+        if (w && w.commons_content && w.commons_content.content_id) return w.commons_content.content_id;
+      }
     } catch (e) { }
     return null;
   }
