@@ -22,6 +22,7 @@
   // ────────────────────────────────────────────────────────
 
   var _lxCache = { courseId: null, resources: null };
+  var _interceptedApiUrls = []; // 캡처된 LX API URL (진단용)
 
   // iframe fetch 인터셉터 — LX 앱이 resources API 호출 시 데이터 캡처
   (function initFetchPatch() {
@@ -39,13 +40,21 @@
              url.indexOf('/progress') === -1;
     }
 
+    function trackApiUrl(url) {
+      if (url.indexOf('/learningx/api/') === -1) return;
+      var base = url.split('?')[0];
+      if (_interceptedApiUrls.indexOf(base) === -1) _interceptedApiUrls.push(base);
+    }
+
     function patchFetch(win) {
       if (!win || !win.fetch || win.__SPE_FETCH_PATCHED) return;
       win.__SPE_FETCH_PATCHED = true;
       var orig = win.fetch;
+      win.__SPE_FETCH_ORIG = orig; // 원본 저장 (iframe 인증 컨텍스트로 직접 호출 시 사용)
       win.fetch = function (input) {
         var url = (typeof input === 'string' ? input : (input && input.url) || '').toString();
         var promise = orig.apply(win, arguments);
+        trackApiUrl(url);
         if (isLxResourcesUrl(url)) {
           promise.then(function (resp) {
             resp.clone().json().then(function (data) { handleLxData(url, data); }).catch(function () {});
@@ -66,6 +75,7 @@
       var origSend = win.XMLHttpRequest.prototype.send;
       win.XMLHttpRequest.prototype.send = function () {
         var url = this._speUrl || '';
+        trackApiUrl(url);
         if (isLxResourcesUrl(url)) {
           this.addEventListener('load', function () {
             try { handleLxData(url, JSON.parse(this.responseText)); } catch (e) {}
@@ -230,8 +240,13 @@
   // ────────────────────────────────────────────────────────
 
   async function fetchLxResources(courseId) {
+    // iframe의 원본 fetch 우선 사용: LX 앱의 인증 컨텍스트(LocalStorage 토큰 등)를 활용
+    var iframe = document.getElementById('tool_content');
+    var iwin = iframe && iframe.contentWindow;
+    var fetchFn = (iwin && iwin.__SPE_FETCH_ORIG) || (iwin && iwin.fetch) || window.fetch;
+    var ctx = (iwin && (iwin.__SPE_FETCH_ORIG || iwin.fetch)) ? iwin : window;
     try {
-      var resp = await fetch('/learningx/api/v1/courses/' + courseId + '/resources', { credentials: 'include' });
+      var resp = await fetchFn.call(ctx, '/learningx/api/v1/courses/' + courseId + '/resources', { credentials: 'include' });
       if (!resp.ok) return;
       var data = await resp.json();
       var arr = Array.isArray(data) ? data : (data.resources || data.items || data.data || null);
@@ -317,27 +332,34 @@
     }
     if (!fiberKey) return null;
 
-    // DOM 요소 fiber에서 부모 컴포넌트 방향으로 올라가며 탐색
+    // DOM 요소 fiber에서 부모 컴포넌트 방향으로 올라가며 props 전체 탐색
     var fiber = itemEl[fiberKey];
     for (var depth = 0; depth < 25 && fiber; depth++) {
-      var found = extractContentIdFromFiberNode(fiber);
+      var found = findCommonsContentId(fiber.memoizedProps, 0);
       if (found) return found;
       fiber = fiber.return;
     }
     return null;
   }
 
-  function extractContentIdFromFiberNode(fiber) {
-    var props = fiber.memoizedProps;
-    if (!props || typeof props !== 'object') return null;
+  // props 객체 전체를 재귀 탐색해 commons_content.content_id 또는 비UUID content_id 반환
+  function findCommonsContentId(obj, depth) {
+    if (!obj || typeof obj !== 'object' || depth > 5) return null;
+    if (Array.isArray(obj)) return null;
     try {
-      // 직접 commons_content
-      if (props.commons_content && props.commons_content.content_id) return props.commons_content.content_id;
-      // resource/item/data 래퍼 객체
-      var wrappers = [props.resource, props.item, props.data, props.contentData];
-      for (var i = 0; i < wrappers.length; i++) {
-        var w = wrappers[i];
-        if (w && w.commons_content && w.commons_content.content_id) return w.commons_content.content_id;
+      var keys = Object.keys(obj);
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        var v = obj[k];
+        // commons_content.content_id 직접 탐색
+        if (k === 'commons_content' && v && typeof v === 'object' && v.content_id) return v.content_id;
+        // 비UUID content_id: 단축 hex(하이픈 없음, 10자 이상)
+        if (k === 'content_id' && typeof v === 'string' && v.length >= 10 && v.indexOf('-') === -1) return v;
+        // 재귀 (함수·배열·null 제외)
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+          var r = findCommonsContentId(v, depth + 1);
+          if (r) return r;
+        }
       }
     } catch (e) { }
     return null;
@@ -369,11 +391,25 @@
 
   document.addEventListener('__SPE_DIAG_REQUEST', function () {
     var sample = _lxCache.resources && _lxCache.resources[0];
+
+    // 첫 번째 .xn-resource-item의 React 키 확인
+    var itemReactKeys = '';
+    try {
+      var iframe = document.getElementById('tool_content');
+      var iDoc = iframe && (iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document));
+      var firstItem = iDoc && iDoc.querySelector('.xn-resource-item');
+      if (firstItem) {
+        itemReactKeys = Object.keys(firstItem).filter(function(k) { return k.startsWith('__react'); }).join(', ') || '없음';
+      }
+    } catch(e) {}
+
     document.dispatchEvent(new CustomEvent('__SPE_DIAG_RESULT', {
       detail: {
         courseId: _lxCache.courseId,
         resourceCount: _lxCache.resources ? _lxCache.resources.length : 0,
         resourceKeys: sample ? Object.keys(sample).join(', ') : '',
+        interceptedUrls: _interceptedApiUrls.join('\n'),
+        itemReactKeys: itemReactKeys,
         sample: sample ? {
           title: sample.title,
           resource_id: sample.resource_id,
