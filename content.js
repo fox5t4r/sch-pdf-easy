@@ -25,7 +25,7 @@
 
   const COMMONS_BASE = 'https://commons.sch.ac.kr';
   const CONTENT_API = `${COMMONS_BASE}/viewer/ssplayer/uniplayer_support/content.php`;
-  const VERSION = '1.6.5';
+  const VERSION = '1.6.6';
   const DL_CONCURRENCY = 5;
   const Shared = globalThis.SpeShared || {};
 
@@ -545,6 +545,7 @@
       lines.push(`LX resources (캐시): ${inj.resourceCount}개`);
       if (inj.resourceKeys) lines.push(`Resource 키: ${inj.resourceKeys}`);
       lines.push(`캡처된 LX API URLs: ${inj.interceptedUrls || '없음'}`);
+      if (inj.iframeUrl) lines.push(`iframe URL: ${inj.iframeUrl}`);
       lines.push(`.xn-resource-item React 키: ${inj.itemReactKeys || '확인 불가'}`);
       if (inj.sample) {
         lines.push(`샘플 resource_id: ${inj.sample.resource_id}`);

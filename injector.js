@@ -85,20 +85,30 @@
       };
     }
 
-    function tryPatch() {
-      var iframe = document.getElementById('tool_content');
-      if (!iframe) return;
-      try { patchFetch(iframe.contentWindow); patchXHR(iframe.contentWindow); } catch (e) {}
+    function patchWin(win) {
+      try { patchFetch(win); patchXHR(win); } catch (e) {}
+    }
+
+    function watchIframe(iframe) {
+      patchWin(iframe.contentWindow);
       iframe.addEventListener('load', function () {
-        try { patchFetch(iframe.contentWindow); patchXHR(iframe.contentWindow); } catch (e) {}
+        patchWin(iframe.contentWindow);
       }, { once: true });
     }
 
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', tryPatch);
-    } else {
-      tryPatch();
-    }
+    // document_start에서 실행: iframe이 DOM에 추가되는 즉시 패치
+    // (document_idle 이후라면 이미 존재하므로 바로 패치)
+    (function startWatching() {
+      var iframe = document.getElementById('tool_content');
+      if (iframe) { watchIframe(iframe); return; }
+      var obs = new MutationObserver(function () {
+        var f = document.getElementById('tool_content');
+        if (!f) return;
+        obs.disconnect();
+        watchIframe(f);
+      });
+      obs.observe(document, { childList: true, subtree: true });
+    })();
   })();
 
   // ────────────────────────────────────────────────────────
@@ -240,21 +250,30 @@
   // ────────────────────────────────────────────────────────
 
   async function fetchLxResources(courseId) {
-    // iframe의 원본 fetch 우선 사용: LX 앱의 인증 컨텍스트(LocalStorage 토큰 등)를 활용
+    // iframe의 원본 fetch 우선 사용: LX 앱의 인증 컨텍스트(쿠키/토큰)를 활용
     var iframe = document.getElementById('tool_content');
     var iwin = iframe && iframe.contentWindow;
     var fetchFn = (iwin && iwin.__SPE_FETCH_ORIG) || (iwin && iwin.fetch) || window.fetch;
     var ctx = (iwin && (iwin.__SPE_FETCH_ORIG || iwin.fetch)) ? iwin : window;
-    try {
-      var resp = await fetchFn.call(ctx, '/learningx/api/v1/courses/' + courseId + '/resources', { credentials: 'include' });
-      if (!resp.ok) return;
-      var data = await resp.json();
-      var arr = Array.isArray(data) ? data : (data.resources || data.items || data.data || null);
-      if (arr && arr.length > 0) {
-        _lxCache.resources = arr;
-        _lxCache.courseId = courseId;
-      }
-    } catch (e) { /* 무시 */ }
+
+    // LX 앱은 /resources_db를 호출하는 것으로 확인됨 → 두 엔드포인트 모두 시도
+    var endpoints = [
+      '/learningx/api/v1/courses/' + courseId + '/resources_db',
+      '/learningx/api/v1/courses/' + courseId + '/resources',
+    ];
+    for (var i = 0; i < endpoints.length; i++) {
+      try {
+        var resp = await fetchFn.call(ctx, endpoints[i], { credentials: 'include' });
+        if (!resp.ok) continue;
+        var data = await resp.json();
+        var arr = Array.isArray(data) ? data : (data.resources || data.items || data.data || null);
+        if (arr && arr.length > 0) {
+          _lxCache.resources = arr;
+          _lxCache.courseId = courseId;
+          return;
+        }
+      } catch (e) { /* 무시 */ }
+    }
   }
 
   // ────────────────────────────────────────────────────────
@@ -264,6 +283,21 @@
   async function extractFromCourseResource(iframeDoc) {
     var files = [];
     var courseId = getLxCourseId();
+
+    // injector-iframe.js가 iframe 내부에서 캡처한 캐시를 우선 동기화
+    var iframe = document.getElementById('tool_content');
+    var iwin = iframe && iframe.contentWindow;
+    try {
+      if (iwin && iwin.__SPE_LX_CACHE && iwin.__SPE_LX_CACHE.resources) {
+        _lxCache.resources = iwin.__SPE_LX_CACHE.resources;
+        _lxCache.courseId = iwin.__SPE_LX_CACHE.courseId;
+      }
+      if (iwin && iwin.__SPE_INTERCEPTED_URLS) {
+        iwin.__SPE_INTERCEPTED_URLS.forEach(function (u) {
+          if (_interceptedApiUrls.indexOf(u) === -1) _interceptedApiUrls.push(u);
+        });
+      }
+    } catch (e) { }
 
     if (!_lxCache.resources && courseId) {
       await fetchLxResources(courseId);
@@ -332,10 +366,11 @@
     }
     if (!fiberKey) return null;
 
-    // DOM 요소 fiber에서 부모 컴포넌트 방향으로 올라가며 props 전체 탐색
+    // DOM 요소 fiber에서 부모 컴포넌트 방향으로 올라가며 props/state 전체 탐색
     var fiber = itemEl[fiberKey];
     for (var depth = 0; depth < 25 && fiber; depth++) {
-      var found = findCommonsContentId(fiber.memoizedProps, 0);
+      var found = findCommonsContentId(fiber.memoizedProps, 0) ||
+                  findCommonsContentId(fiber.memoizedState, 0);
       if (found) return found;
       fiber = fiber.return;
     }
@@ -390,13 +425,32 @@
   // ────────────────────────────────────────────────────────
 
   document.addEventListener('__SPE_DIAG_REQUEST', function () {
+    // injector-iframe.js 캐시 병합
+    var iframeUrl = '';
+    try {
+      var ifEl = document.getElementById('tool_content');
+      var iwin = ifEl && ifEl.contentWindow;
+      if (iwin) {
+        try { iframeUrl = iwin.location.href; } catch (e) { iframeUrl = '접근 불가'; }
+        if (iwin.__SPE_LX_CACHE && iwin.__SPE_LX_CACHE.resources) {
+          _lxCache.resources = iwin.__SPE_LX_CACHE.resources;
+          _lxCache.courseId = iwin.__SPE_LX_CACHE.courseId;
+        }
+        if (iwin.__SPE_INTERCEPTED_URLS) {
+          iwin.__SPE_INTERCEPTED_URLS.forEach(function (u) {
+            if (_interceptedApiUrls.indexOf(u) === -1) _interceptedApiUrls.push(u);
+          });
+        }
+      }
+    } catch (e) { }
+
     var sample = _lxCache.resources && _lxCache.resources[0];
 
     // 첫 번째 .xn-resource-item의 React 키 확인
     var itemReactKeys = '';
     try {
-      var iframe = document.getElementById('tool_content');
-      var iDoc = iframe && (iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document));
+      var iframeEl2 = document.getElementById('tool_content');
+      var iDoc = iframeEl2 && (iframeEl2.contentDocument || (iframeEl2.contentWindow && iframeEl2.contentWindow.document));
       var firstItem = iDoc && iDoc.querySelector('.xn-resource-item');
       if (firstItem) {
         itemReactKeys = Object.keys(firstItem).filter(function(k) { return k.startsWith('__react'); }).join(', ') || '없음';
@@ -409,6 +463,7 @@
         resourceCount: _lxCache.resources ? _lxCache.resources.length : 0,
         resourceKeys: sample ? Object.keys(sample).join(', ') : '',
         interceptedUrls: _interceptedApiUrls.join('\n'),
+        iframeUrl: iframeUrl,
         itemReactKeys: itemReactKeys,
         sample: sample ? {
           title: sample.title,
