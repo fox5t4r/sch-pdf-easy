@@ -82,6 +82,7 @@
         </div>
         <div class="spe-footer">
           <button id="spe-clear-history-btn" class="spe-link-btn">기록 초기화</button>
+          <button id="spe-diag-btn" class="spe-link-btn">진단 복사</button>
         </div>
       </div>
       <button id="sch-pdf-easy-fab" title="SCH PDF Easy Downloader">PDF</button>
@@ -105,6 +106,7 @@
     document.getElementById('spe-download-btn').addEventListener('click', () => downloadNew());
     document.getElementById('spe-download-all-btn').addEventListener('click', () => downloadAll());
     document.getElementById('spe-clear-history-btn').addEventListener('click', clearHistory);
+    document.getElementById('spe-diag-btn').addEventListener('click', copyDiagnostics);
   }
 
   // ──────────────────────────────────────────────
@@ -457,7 +459,93 @@
   }
 
   // ──────────────────────────────────────────────
-  // 8. 유틸리티
+  // 8. 진단
+  // ──────────────────────────────────────────────
+
+  async function copyDiagnostics() {
+    const btn = document.getElementById('spe-diag-btn');
+    btn.textContent = '수집 중...';
+    btn.disabled = true;
+
+    const lines = [];
+    lines.push(`=== SCH PDF Easy v${VERSION} 진단 ===`);
+    lines.push(`URL: ${window.location.href}`);
+    lines.push(`시간: ${new Date().toISOString()}`);
+    lines.push('');
+
+    // injector에서 LX 캐시 상태 수집
+    const inj = await new Promise((resolve) => {
+      let done = false;
+      function handler(e) {
+        document.removeEventListener('__SPE_DIAG_RESULT', handler);
+        done = true;
+        resolve(e.detail);
+      }
+      document.addEventListener('__SPE_DIAG_RESULT', handler);
+      document.dispatchEvent(new CustomEvent('__SPE_DIAG_REQUEST'));
+      setTimeout(() => { if (!done) { document.removeEventListener('__SPE_DIAG_RESULT', handler); resolve(null); } }, 3000);
+    });
+
+    if (inj) {
+      lines.push(`LX courseId: ${inj.courseId || '없음'}`);
+      lines.push(`LX resources: ${inj.resourceCount}개`);
+      if (inj.resourceKeys) lines.push(`Resource 키: ${inj.resourceKeys}`);
+      if (inj.sample) {
+        lines.push(`샘플 resource_id: ${inj.sample.resource_id}`);
+        lines.push(`샘플 commons_content.content_id: ${inj.sample.commonsContentId || '없음'}`);
+        lines.push(`샘플 progress_support: ${inj.sample.commonsProgressSupport}`);
+      }
+    } else {
+      lines.push('LX 캐시: injector 응답 없음 (강의자료실 페이지가 아닐 수 있음)');
+    }
+    lines.push('');
+
+    // 스캔된 파일 없으면 먼저 스캔
+    if (currentPDFs.length === 0) {
+      lines.push('스캔된 파일 없음 — 스캔 후 다시 시도하세요.');
+    } else {
+      lines.push(`스캔된 파일: ${currentPDFs.length}개`);
+      lines.push('');
+      for (let i = 0; i < currentPDFs.length; i++) {
+        const pdf = currentPDFs[i];
+        lines.push(`[파일 ${i}] ${pdf.title}`);
+        lines.push(`  type: ${pdf.type}, ext: ${pdf.ext}`);
+        lines.push(`  contentId: ${pdf.contentId}`);
+        if (pdf.lxContentId) lines.push(`  lxContentId: ${pdf.lxContentId}`);
+        if (pdf.directUrl) { lines.push(`  directUrl: ${pdf.directUrl}`); continue; }
+
+        const eid = (pdf.type === 'lx_resource' && pdf.lxContentId) ? pdf.lxContentId : pdf.contentId;
+        try {
+          const resp = await fetch(`${CONTENT_API}?content_id=${encodeURIComponent(eid)}&_=${Date.now()}`);
+          const text = await resp.text();
+          lines.push(`  content.php 상태: ${resp.status}`);
+          lines.push(`  content.php 응답: ${text.substring(0, 300).replace(/\n/g, ' ')}`);
+        } catch (e) {
+          lines.push(`  content.php 오류: ${e.message}`);
+        }
+        lines.push('');
+      }
+    }
+
+    const output = lines.join('\n');
+    try {
+      await navigator.clipboard.writeText(output);
+      btn.textContent = '복사됨!';
+    } catch (e) {
+      // 클립보드 실패 시 텍스트 영역으로 표시
+      const ta = document.createElement('textarea');
+      ta.value = output;
+      ta.style.cssText = 'position:fixed;top:10px;left:10px;width:80vw;height:60vh;z-index:99999;font-size:11px;';
+      document.body.appendChild(ta);
+      ta.select();
+      btn.textContent = '텍스트 선택됨';
+      setTimeout(() => ta.remove(), 15000);
+    }
+    setTimeout(() => { btn.textContent = '진단 복사'; btn.disabled = false; }, 2000);
+  }
+
+  // ──────────────────────────────────────────────
+  // 9. 유틸리티
   // ──────────────────────────────────────────────
 
   function sleep(ms) {
@@ -475,7 +563,7 @@
   }
 
   // ──────────────────────────────────────────────
-  // 9. 초기화
+  // 10. 초기화
   // ──────────────────────────────────────────────
 
   function init() {

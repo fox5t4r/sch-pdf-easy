@@ -293,6 +293,27 @@
   }
 
   // ────────────────────────────────────────────────────────
+  // 진단 정보 제공
+  // ────────────────────────────────────────────────────────
+
+  document.addEventListener('__SPE_DIAG_REQUEST', function () {
+    var sample = _lxCache.resources && _lxCache.resources[0];
+    document.dispatchEvent(new CustomEvent('__SPE_DIAG_RESULT', {
+      detail: {
+        courseId: _lxCache.courseId,
+        resourceCount: _lxCache.resources ? _lxCache.resources.length : 0,
+        resourceKeys: sample ? Object.keys(sample).join(', ') : '',
+        sample: sample ? {
+          title: sample.title,
+          resource_id: sample.resource_id,
+          commonsContentId: sample.commons_content ? sample.commons_content.content_id : null,
+          commonsProgressSupport: sample.commons_content ? sample.commons_content.progress_support : null,
+        } : null,
+      },
+    }));
+  });
+
+  // ────────────────────────────────────────────────────────
   // 결과 전송
   // ────────────────────────────────────────────────────────
 
