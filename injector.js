@@ -8,8 +8,14 @@
  *
  *   2. courseresource (강의자료실, external_tools/2)
  *      → DOM .xn-resource-item 탐색
- *      → LX API 리소스 목록으로 commons_content.content_id 획득
+ *      → React 15/16 컴포넌트 props에서 commons_content.content_id 직접 추출
  *      → commons content.php API로 다운로드 URL 획득
+ *
+ * [강의자료실 핵심 메커니즘]
+ * LX 앱(강의자료실)은 React 15(legacy)를 사용합니다.
+ * DOM 요소의 __reactInternalInstance$xxx → _currentElement._owner._instance.props.resourceData
+ * 경로로 commons_content.content_id (short hex)를 직접 읽습니다.
+ * fetch 인터셉션 없이 동기적으로 데이터를 획득하므로 타이밍 문제가 없습니다.
  */
 
 (function () {
@@ -17,99 +23,9 @@
 
   var _idCounter = 0;
 
-  // ────────────────────────────────────────────────────────
-  // LX API 캐시 (iframe fetch 인터셉터 + 직접 호출로 채움)
-  // ────────────────────────────────────────────────────────
-
+  // LX API 캐시 (fetchLxResources 폴백으로 채움 / 진단용)
   var _lxCache = { courseId: null, resources: null };
-  var _interceptedApiUrls = []; // 캡처된 LX API URL (진단용)
-
-  // iframe fetch 인터셉터 — LX 앱이 resources API 호출 시 데이터 캡처
-  (function initFetchPatch() {
-    function handleLxData(url, data) {
-      var arr = Array.isArray(data) ? data : (data.resources || data.items || data.data || null);
-      if (!arr || arr.length === 0) return;
-      _lxCache.resources = arr;
-      var m = url.match(/\/courses\/(\d+)\/resources/);
-      if (m) _lxCache.courseId = m[1];
-    }
-
-    function isLxResourcesUrl(url) {
-      return url.indexOf('/learningx/api/v1/courses/') !== -1 &&
-             url.indexOf('/resources') !== -1 &&
-             url.indexOf('/progress') === -1;
-    }
-
-    function trackApiUrl(url) {
-      if (url.indexOf('/learningx/api/') === -1) return;
-      var base = url.split('?')[0];
-      if (_interceptedApiUrls.indexOf(base) === -1) _interceptedApiUrls.push(base);
-    }
-
-    function patchFetch(win) {
-      if (!win || !win.fetch || win.__SPE_FETCH_PATCHED) return;
-      win.__SPE_FETCH_PATCHED = true;
-      var orig = win.fetch;
-      win.__SPE_FETCH_ORIG = orig; // 원본 저장 (iframe 인증 컨텍스트로 직접 호출 시 사용)
-      win.fetch = function (input) {
-        var url = (typeof input === 'string' ? input : (input && input.url) || '').toString();
-        var promise = orig.apply(win, arguments);
-        trackApiUrl(url);
-        if (isLxResourcesUrl(url)) {
-          promise.then(function (resp) {
-            resp.clone().json().then(function (data) { handleLxData(url, data); }).catch(function () {});
-          }).catch(function () {});
-        }
-        return promise;
-      };
-    }
-
-    function patchXHR(win) {
-      if (!win || !win.XMLHttpRequest || win.__SPE_XHR_PATCHED) return;
-      win.__SPE_XHR_PATCHED = true;
-      var origOpen = win.XMLHttpRequest.prototype.open;
-      win.XMLHttpRequest.prototype.open = function (method, url) {
-        this._speUrl = (url || '').toString();
-        return origOpen.apply(this, arguments);
-      };
-      var origSend = win.XMLHttpRequest.prototype.send;
-      win.XMLHttpRequest.prototype.send = function () {
-        var url = this._speUrl || '';
-        trackApiUrl(url);
-        if (isLxResourcesUrl(url)) {
-          this.addEventListener('load', function () {
-            try { handleLxData(url, JSON.parse(this.responseText)); } catch (e) {}
-          });
-        }
-        return origSend.apply(this, arguments);
-      };
-    }
-
-    function patchWin(win) {
-      try { patchFetch(win); patchXHR(win); } catch (e) {}
-    }
-
-    function watchIframe(iframe) {
-      patchWin(iframe.contentWindow);
-      iframe.addEventListener('load', function () {
-        patchWin(iframe.contentWindow);
-      }, { once: true });
-    }
-
-    // document_start에서 실행: iframe이 DOM에 추가되는 즉시 패치
-    // (document_idle 이후라면 이미 존재하므로 바로 패치)
-    (function startWatching() {
-      var iframe = document.getElementById('tool_content');
-      if (iframe) { watchIframe(iframe); return; }
-      var obs = new MutationObserver(function () {
-        var f = document.getElementById('tool_content');
-        if (!f) return;
-        obs.disconnect();
-        watchIframe(f);
-      });
-      obs.observe(document, { childList: true, subtree: true });
-    })();
-  })();
+  var _interceptedApiUrls = [];
 
   // ────────────────────────────────────────────────────────
   // 이벤트 수신
@@ -250,20 +166,15 @@
   // ────────────────────────────────────────────────────────
 
   async function fetchLxResources(courseId) {
-    // iframe의 원본 fetch 우선 사용: LX 앱의 인증 컨텍스트(쿠키/토큰)를 활용
-    var iframe = document.getElementById('tool_content');
-    var iwin = iframe && iframe.contentWindow;
-    var fetchFn = (iwin && iwin.__SPE_FETCH_ORIG) || (iwin && iwin.fetch) || window.fetch;
-    var ctx = (iwin && (iwin.__SPE_FETCH_ORIG || iwin.fetch)) ? iwin : window;
-
-    // LX 앱은 /resources_db를 호출하는 것으로 확인됨 → 두 엔드포인트 모두 시도
+    // React props 추출이 실패한 항목의 최후 폴백으로만 호출됨
+    // 주의: 이 엔드포인트는 세션 인증이 필요해 401이 반환될 수 있음
     var endpoints = [
       '/learningx/api/v1/courses/' + courseId + '/resources_db',
       '/learningx/api/v1/courses/' + courseId + '/resources',
     ];
     for (var i = 0; i < endpoints.length; i++) {
       try {
-        var resp = await fetchFn.call(ctx, endpoints[i], { credentials: 'include' });
+        var resp = await fetch(endpoints[i], { credentials: 'include' });
         if (!resp.ok) continue;
         var data = await resp.json();
         var arr = Array.isArray(data) ? data : (data.resources || data.items || data.data || null);
@@ -299,22 +210,6 @@
   async function extractFromCourseResource(iframeDoc) {
     var files = [];
     var courseId = getLxCourseId();
-
-    // injector-iframe.js가 iframe 내부에서 캡처한 캐시를 우선 동기화
-    var iframe = document.getElementById('tool_content');
-    var iwin = iframe && iframe.contentWindow;
-    try {
-      if (iwin && iwin.__SPE_LX_CACHE && iwin.__SPE_LX_CACHE.resources) {
-        _lxCache.resources = iwin.__SPE_LX_CACHE.resources;
-        _lxCache.courseId = iwin.__SPE_LX_CACHE.courseId;
-      }
-      if (iwin && iwin.__SPE_INTERCEPTED_URLS) {
-        iwin.__SPE_INTERCEPTED_URLS.forEach(function (u) {
-          if (_interceptedApiUrls.indexOf(u) === -1) _interceptedApiUrls.push(u);
-        });
-      }
-    } catch (e) { }
-
     var items = iframeDoc.querySelectorAll('.xn-resource-item');
     items.forEach(function (item) {
 
@@ -537,22 +432,12 @@
   // ────────────────────────────────────────────────────────
 
   document.addEventListener('__SPE_DIAG_REQUEST', function () {
-    // injector-iframe.js 캐시 병합
     var iframeUrl = '';
     try {
       var ifEl = document.getElementById('tool_content');
       var iwin = ifEl && ifEl.contentWindow;
       if (iwin) {
         try { iframeUrl = iwin.location.href; } catch (e) { iframeUrl = '접근 불가'; }
-        if (iwin.__SPE_LX_CACHE && iwin.__SPE_LX_CACHE.resources) {
-          _lxCache.resources = iwin.__SPE_LX_CACHE.resources;
-          _lxCache.courseId = iwin.__SPE_LX_CACHE.courseId;
-        }
-        if (iwin.__SPE_INTERCEPTED_URLS) {
-          iwin.__SPE_INTERCEPTED_URLS.forEach(function (u) {
-            if (_interceptedApiUrls.indexOf(u) === -1) _interceptedApiUrls.push(u);
-          });
-        }
       }
     } catch (e) { }
 

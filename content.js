@@ -25,7 +25,7 @@
 
   const COMMONS_BASE = 'https://commons.sch.ac.kr';
   const CONTENT_API = `${COMMONS_BASE}/viewer/ssplayer/uniplayer_support/content.php`;
-  const VERSION = '1.6.7';
+  const VERSION = '1.6.8';
   const DL_CONCURRENCY = 5;
   const Shared = globalThis.SpeShared || {};
 
