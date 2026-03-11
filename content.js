@@ -25,7 +25,7 @@
 
   const COMMONS_BASE = 'https://commons.sch.ac.kr';
   const CONTENT_API = `${COMMONS_BASE}/viewer/ssplayer/uniplayer_support/content.php`;
-  const VERSION = '1.6.1';
+  const VERSION = '1.6.2';
   const DL_CONCURRENCY = 5;
 
   let isRunning = false;
@@ -217,6 +217,15 @@
     const downloadUri = xml.querySelector('content_download_uri');
     if (downloadUri && downloadUri.textContent) {
       return `${COMMONS_BASE}${downloadUri.textContent}`;
+    }
+
+    // sharedocs 타입: content_uri에서 source 경로 구성 시도
+    const contentType = xml.querySelector('content_type');
+    const contentUri = xml.querySelector('content_uri');
+    if (contentType && contentType.textContent === 'sharedocs' && contentUri && contentUri.textContent) {
+      // content_uri: .../contents/web_files → .../contents/source/original.pdf 시도
+      const base = contentUri.textContent.replace(/\/web_files\/?$/, '');
+      return `${base}/source/original.${pdf.ext || 'pdf'}`;
     }
 
     // fallback: 구형 commons 다운로드 URL 패턴
@@ -550,7 +559,17 @@
           const resp = await fetch(`${CONTENT_API}?content_id=${encodeURIComponent(eid)}&_=${Date.now()}`);
           const text = await resp.text();
           lines.push(`  content.php 상태: ${resp.status}`);
-          lines.push(`  content.php 응답: ${text.substring(0, 300).replace(/\n/g, ' ')}`);
+          lines.push(`  content.php 원문: ${text.substring(0, 1000).replace(/\n/g, ' ')}`);
+          try {
+            const xmlDoc = new DOMParser().parseFromString(text, 'text/xml');
+            const fields = ['content_type','content_uri','content_download_uri','content_name','content_id'];
+            fields.forEach(f => {
+              const el = xmlDoc.querySelector(f);
+              if (el) lines.push(`  [XML] ${f}: ${el.textContent}`);
+            });
+          } catch(xe) {
+            lines.push(`  XML 파싱 실패: ${xe.message}`);
+          }
         } catch (e) {
           lines.push(`  content.php 오류: ${e.message}`);
         }
