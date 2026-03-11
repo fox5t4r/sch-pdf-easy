@@ -25,38 +25,62 @@
 
   // iframe fetch 인터셉터 — LX 앱이 resources API 호출 시 데이터 캡처
   (function initFetchPatch() {
-    function patch(win) {
-      if (!win || !win.fetch || win.__SPE_PATCHED) return;
-      win.__SPE_PATCHED = true;
+    function handleLxData(url, data) {
+      var arr = Array.isArray(data) ? data : (data.resources || data.items || data.data || null);
+      if (!arr || arr.length === 0) return;
+      _lxCache.resources = arr;
+      var m = url.match(/\/courses\/(\d+)\/resources/);
+      if (m) _lxCache.courseId = m[1];
+    }
+
+    function isLxResourcesUrl(url) {
+      return url.indexOf('/learningx/api/v1/courses/') !== -1 &&
+             url.indexOf('/resources') !== -1 &&
+             url.indexOf('/progress') === -1;
+    }
+
+    function patchFetch(win) {
+      if (!win || !win.fetch || win.__SPE_FETCH_PATCHED) return;
+      win.__SPE_FETCH_PATCHED = true;
       var orig = win.fetch;
       win.fetch = function (input) {
         var url = (typeof input === 'string' ? input : (input && input.url) || '').toString();
         var promise = orig.apply(win, arguments);
-        if (url.indexOf('/learningx/api/v1/courses/') !== -1 &&
-            url.indexOf('/resources') !== -1 &&
-            url.indexOf('/progress') === -1) {
-          var m = url.match(/\/courses\/(\d+)\/resources/);
+        if (isLxResourcesUrl(url)) {
           promise.then(function (resp) {
-            resp.clone().json().then(function (data) {
-              var arr = Array.isArray(data) ? data :
-                        (data.resources || data.items || data.data || null);
-              if (arr && arr.length > 0) {
-                _lxCache.resources = arr;
-                if (m) _lxCache.courseId = m[1];
-              }
-            }).catch(function () {});
+            resp.clone().json().then(function (data) { handleLxData(url, data); }).catch(function () {});
           }).catch(function () {});
         }
         return promise;
       };
     }
 
+    function patchXHR(win) {
+      if (!win || !win.XMLHttpRequest || win.__SPE_XHR_PATCHED) return;
+      win.__SPE_XHR_PATCHED = true;
+      var origOpen = win.XMLHttpRequest.prototype.open;
+      win.XMLHttpRequest.prototype.open = function (method, url) {
+        this._speUrl = (url || '').toString();
+        return origOpen.apply(this, arguments);
+      };
+      var origSend = win.XMLHttpRequest.prototype.send;
+      win.XMLHttpRequest.prototype.send = function () {
+        var url = this._speUrl || '';
+        if (isLxResourcesUrl(url)) {
+          this.addEventListener('load', function () {
+            try { handleLxData(url, JSON.parse(this.responseText)); } catch (e) {}
+          });
+        }
+        return origSend.apply(this, arguments);
+      };
+    }
+
     function tryPatch() {
       var iframe = document.getElementById('tool_content');
       if (!iframe) return;
-      try { patch(iframe.contentWindow); } catch (e) {}
+      try { patchFetch(iframe.contentWindow); patchXHR(iframe.contentWindow); } catch (e) {}
       iframe.addEventListener('load', function () {
-        try { patch(iframe.contentWindow); } catch (e) {}
+        try { patchFetch(iframe.contentWindow); patchXHR(iframe.contentWindow); } catch (e) {}
       }, { once: true });
     }
 

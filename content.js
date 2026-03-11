@@ -488,7 +488,7 @@
 
     if (inj) {
       lines.push(`LX courseId: ${inj.courseId || '없음'}`);
-      lines.push(`LX resources: ${inj.resourceCount}개`);
+      lines.push(`LX resources (캐시): ${inj.resourceCount}개`);
       if (inj.resourceKeys) lines.push(`Resource 키: ${inj.resourceKeys}`);
       if (inj.sample) {
         lines.push(`샘플 resource_id: ${inj.sample.resource_id}`);
@@ -499,6 +499,37 @@
       lines.push('LX 캐시: injector 응답 없음 (강의자료실 페이지가 아닐 수 있음)');
     }
     lines.push('');
+
+    // LX resources API 직접 테스트
+    const courseId = (window.location.pathname.match(/\/courses\/(\d+)/) || [])[1];
+    if (courseId) {
+      lines.push(`LX resources API 직접 테스트 (courseId=${courseId}):`);
+      try {
+        const r = await fetch(`/learningx/api/v1/courses/${courseId}/resources`, { credentials: 'include' });
+        lines.push(`  HTTP 상태: ${r.status}`);
+        const body = await r.text();
+        if (r.ok) {
+          try {
+            const parsed = JSON.parse(body);
+            const arr = Array.isArray(parsed) ? parsed : null;
+            if (arr) {
+              lines.push(`  결과: ${arr.length}개`);
+              if (arr[0]) lines.push(`  첫번째 키: ${Object.keys(arr[0]).join(', ')}`);
+              if (arr[0] && arr[0].commons_content) lines.push(`  commons_content.content_id: ${arr[0].commons_content.content_id || '없음'}`);
+            } else {
+              lines.push(`  결과: 배열 아님 — ${body.slice(0, 100)}`);
+            }
+          } catch (e) {
+            lines.push(`  JSON 파싱 실패: ${body.slice(0, 100)}`);
+          }
+        } else {
+          lines.push(`  오류 응답: ${body.slice(0, 150)}`);
+        }
+      } catch (e) {
+        lines.push(`  예외: ${e.message}`);
+      }
+      lines.push('');
+    }
 
     // 스캔된 파일 없으면 먼저 스캔
     if (currentPDFs.length === 0) {
