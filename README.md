@@ -1,7 +1,5 @@
 # SCH PDF Easy Downloader
 
-**지금 강의자료실에서 약간의 버그가 있어서 강의콘텐츠만 서비스 지원합니다**
-
 순천향대학교 LMS([medlms.sch.ac.kr](https://medlms.sch.ac.kr))의 강의 자료를 일괄 다운로드하는 Chrome 확장 프로그램입니다.
 
 ![Screenshot](./screenshot.png)
