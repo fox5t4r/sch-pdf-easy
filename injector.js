@@ -280,6 +280,22 @@
   // DOM 기반 파일 추출 (강의자료실 / courseresource)
   // ────────────────────────────────────────────────────────
 
+  // 썸네일 이미지에서 UUID 추출 헬퍼
+  function extractThumbnailUUID(item, thumbnailUrl) {
+    // 1) React props의 thumbnail_url에서 추출
+    if (thumbnailUrl) {
+      var m = thumbnailUrl.match(/contents\/([^.?/]+)/);
+      if (m) return m[1];
+    }
+    // 2) DOM의 img 요소에서 추출
+    var img = item.querySelector('.xnri-thumbnail-commons, img[src*="contents/"]');
+    if (img) {
+      var m2 = img.src.match(/contents\/([^.?/]+)/);
+      if (m2) return m2[1];
+    }
+    return null;
+  }
+
   async function extractFromCourseResource(iframeDoc) {
     var files = [];
     var courseId = getLxCourseId();
@@ -299,24 +315,44 @@
       }
     } catch (e) { }
 
-    if (!_lxCache.resources && courseId) {
-      await fetchLxResources(courseId);
-    }
-
     var items = iframeDoc.querySelectorAll('.xn-resource-item');
     items.forEach(function (item) {
+
+      // ── 방법 1 (Primary): React 컴포넌트 props에서 직접 추출 ──
+      //    React 15 _currentElement._owner._instance.props.resourceData
+      //    React 16+ memoizedProps.resourceData
+      var resourceData = extractResourceDataFromReact(item);
+      if (resourceData && resourceData.commons_content) {
+        var cc = resourceData.commons_content;
+        var ext = getSupportedExt('file.' + (cc.content_type || ''));
+        if (!ext) return; // 지원하지 않는 파일 타입
+
+        // 다운로드 기록 호환을 위해 썸네일 UUID를 contentId로 사용
+        var thumbUUID = extractThumbnailUUID(item, cc.thumbnail_url);
+
+        files.push({
+          title: resourceData.title || cc.file_name || item.getAttribute('aria-label') || '',
+          contentId: thumbUUID || cc.content_id,
+          lxContentId: cc.content_id,
+          section: '강의자료실',
+          subsection: '',
+          type: 'lx_resource',
+          ext: ext,
+        });
+        return;
+      }
+
+      // ── 방법 2 (Fallback): DOM + LX API 캐시 ──
       var descEl = item.querySelector('.xnri-description.pdf, .xnri-description.ppt, .xnri-description.pptx');
       if (!descEl) return;
 
-      var ext = descEl.classList.contains('pptx') ? 'pptx' : descEl.classList.contains('ppt') ? 'ppt' : 'pdf';
+      var ext2 = descEl.classList.contains('pptx') ? 'pptx' : descEl.classList.contains('ppt') ? 'ppt' : 'pdf';
       var title = item.getAttribute('aria-label') || '';
 
-      var img = item.querySelector('.xnri-thumbnail-commons, img[src*="contents/"]');
-      if (!img) return;
-      var match = img.src.match(/contents\/([^.?/]+)/);
-      if (!match) return;
-      var contentId = match[1];
+      var contentId = extractThumbnailUUID(item, null);
+      if (!contentId) return;
 
+      // API 캐시에서 먼저 시도
       var cachedRes = findCachedResource(contentId, title);
       var lxContentId = cachedRes && cachedRes.commons_content
         ? (cachedRes.commons_content.content_id || null)
@@ -334,9 +370,23 @@
         section: '강의자료실',
         subsection: '',
         type: 'lx_resource',
-        ext: ext,
+        ext: ext2,
       });
     });
+
+    // API 캐시 폴백: 방법 1,2 모두 lxContentId를 못 얻은 항목이 있으면 API 직접 호출
+    var needsApiCache = files.some(function (f) { return !f.lxContentId; });
+    if (needsApiCache && !_lxCache.resources && courseId) {
+      await fetchLxResources(courseId);
+      // 캐시 획득 후 lxContentId 재시도
+      files.forEach(function (f) {
+        if (f.lxContentId) return;
+        var cachedRes = findCachedResource(f.contentId, f.title);
+        if (cachedRes && cachedRes.commons_content) {
+          f.lxContentId = cachedRes.commons_content.content_id || null;
+        }
+      });
+    }
 
     return files;
   }
@@ -352,23 +402,85 @@
   }
 
   // ────────────────────────────────────────────────────────
-  // .xn-resource-item React fiber에서 commons_content.content_id 추출
+  // React 내부 인스턴스 키 탐색 헬퍼
+  // ────────────────────────────────────────────────────────
+
+  function findReactInternalKey(el) {
+    var keys = Object.keys(el);
+    for (var i = 0; i < keys.length; i++) {
+      if (keys[i].startsWith('__reactFiber') || keys[i].startsWith('__reactInternalInstance')) {
+        return keys[i];
+      }
+    }
+    return null;
+  }
+
+  // ────────────────────────────────────────────────────────
+  // React 15/16 컴포넌트 props에서 resourceData 전체 추출
+  // ────────────────────────────────────────────────────────
+
+  function extractResourceDataFromReact(itemEl) {
+    var fiberKey = findReactInternalKey(itemEl);
+    if (!fiberKey) return null;
+
+    var inst = itemEl[fiberKey];
+
+    // ── React 15: _currentElement._owner._instance.props ──
+    if (inst._currentElement) {
+      var owner = inst._currentElement._owner;
+      for (var depth = 0; depth < 15 && owner; depth++) {
+        if (owner._instance && owner._instance.props && owner._instance.props.resourceData) {
+          return owner._instance.props.resourceData;
+        }
+        owner = (owner._currentElement && owner._currentElement._owner) || null;
+      }
+      return null;
+    }
+
+    // ── React 16+: memoizedProps.resourceData ──
+    var fiber = inst;
+    for (var d = 0; d < 25 && fiber; d++) {
+      if (fiber.memoizedProps && fiber.memoizedProps.resourceData) {
+        return fiber.memoizedProps.resourceData;
+      }
+      fiber = fiber.return;
+    }
+    return null;
+  }
+
+  // ────────────────────────────────────────────────────────
+  // .xn-resource-item React 컴포넌트에서 commons_content.content_id 추출
   // ────────────────────────────────────────────────────────
 
   function extractContentIdFromItemFiber(itemEl) {
-    var fiberKey = null;
-    var keys = Object.keys(itemEl);
-    for (var i = 0; i < keys.length; i++) {
-      if (keys[i].startsWith('__reactFiber') || keys[i].startsWith('__reactInternalInstance')) {
-        fiberKey = keys[i];
-        break;
-      }
+    // 방법 A: extractResourceDataFromReact로 전체 데이터 추출
+    var rd = extractResourceDataFromReact(itemEl);
+    if (rd && rd.commons_content && rd.commons_content.content_id) {
+      return rd.commons_content.content_id;
     }
+
+    // 방법 B: 재귀 탐색 (폴백)
+    var fiberKey = findReactInternalKey(itemEl);
     if (!fiberKey) return null;
 
-    // DOM 요소 fiber에서 부모 컴포넌트 방향으로 올라가며 props/state 전체 탐색
-    var fiber = itemEl[fiberKey];
-    for (var depth = 0; depth < 25 && fiber; depth++) {
+    var inst = itemEl[fiberKey];
+
+    // React 15: _currentElement._owner chain
+    if (inst._currentElement) {
+      var owner = inst._currentElement._owner;
+      for (var depth = 0; depth < 15 && owner; depth++) {
+        if (owner._instance && owner._instance.props) {
+          var found = findCommonsContentId(owner._instance.props, 0);
+          if (found) return found;
+        }
+        owner = (owner._currentElement && owner._currentElement._owner) || null;
+      }
+      return null;
+    }
+
+    // React 16+: memoizedProps / return chain
+    var fiber = inst;
+    for (var d = 0; d < 25 && fiber; d++) {
       var found = findCommonsContentId(fiber.memoizedProps, 0) ||
                   findCommonsContentId(fiber.memoizedState, 0);
       if (found) return found;
@@ -446,16 +558,42 @@
 
     var sample = _lxCache.resources && _lxCache.resources[0];
 
-    // 첫 번째 .xn-resource-item의 React 키 확인
+    // 첫 번째 .xn-resource-item의 React 키 및 데이터 추출 테스트
     var itemReactKeys = '';
+    var reactVersion = '알 수 없음';
+    var reactExtractResult = '미테스트';
     try {
       var iframeEl2 = document.getElementById('tool_content');
       var iDoc = iframeEl2 && (iframeEl2.contentDocument || (iframeEl2.contentWindow && iframeEl2.contentWindow.document));
       var firstItem = iDoc && iDoc.querySelector('.xn-resource-item');
       if (firstItem) {
         itemReactKeys = Object.keys(firstItem).filter(function(k) { return k.startsWith('__react'); }).join(', ') || '없음';
+
+        // React 버전 감지
+        var rKey = findReactInternalKey(firstItem);
+        if (rKey) {
+          var rInst = firstItem[rKey];
+          if (rInst._currentElement) {
+            reactVersion = 'React 15 (legacy)';
+          } else if (rInst.memoizedProps || rInst.return) {
+            reactVersion = 'React 16+ (fiber)';
+          }
+        }
+
+        // React props 추출 테스트
+        var testRd = extractResourceDataFromReact(firstItem);
+        if (testRd) {
+          var testCc = testRd.commons_content;
+          reactExtractResult = testCc
+            ? '성공 (content_id: ' + testCc.content_id + ', type: ' + testCc.content_type + ')'
+            : '성공 (commons_content 없음)';
+        } else {
+          reactExtractResult = '실패 (resourceData 없음)';
+        }
       }
-    } catch(e) {}
+    } catch(e) {
+      reactExtractResult = '오류: ' + e.message;
+    }
 
     document.dispatchEvent(new CustomEvent('__SPE_DIAG_RESULT', {
       detail: {
@@ -465,6 +603,8 @@
         interceptedUrls: _interceptedApiUrls.join('\n'),
         iframeUrl: iframeUrl,
         itemReactKeys: itemReactKeys,
+        reactVersion: reactVersion,
+        reactExtractResult: reactExtractResult,
         sample: sample ? {
           title: sample.title,
           resource_id: sample.resource_id,
