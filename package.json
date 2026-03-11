@@ -1,0 +1,8 @@
+{
+  "name": "sch-pdf-easy",
+  "private": true,
+  "scripts": {
+    "lint:syntax": "node --check background.js && node --check content.js && node --check injector.js && node --check shared.js",
+    "test": "node --test"
+  }
+}

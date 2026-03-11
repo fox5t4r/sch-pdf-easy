@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SCH PDF Easy Downloader",
-  "version": "1.6.4",
+  "version": "1.6.5",
   "description": "순천향대 LMS(medlms.sch.ac.kr) 강의 PDF 자료를 한 번에 다운로드합니다.",
   "permissions": [
     "activeTab",
@@ -15,14 +15,14 @@
   "content_scripts": [
     {
       "matches": ["https://medlms.sch.ac.kr/courses/*/external_tools/*"],
-      "js": ["content.js"],
+      "js": ["shared.js", "content.js"],
       "css": ["style.css"],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
       "matches": ["https://medlms.sch.ac.kr/courses/*/external_tools/*"],
-      "js": ["injector.js"],
+      "js": ["shared.js", "injector.js"],
       "run_at": "document_idle",
       "world": "MAIN",
       "all_frames": false

@@ -25,8 +25,9 @@
 
   const COMMONS_BASE = 'https://commons.sch.ac.kr';
   const CONTENT_API = `${COMMONS_BASE}/viewer/ssplayer/uniplayer_support/content.php`;
-  const VERSION = '1.6.4';
+  const VERSION = '1.6.5';
   const DL_CONCURRENCY = 5;
+  const Shared = globalThis.SpeShared || {};
 
   let isRunning = false;
   let currentPDFs = [];
@@ -121,6 +122,28 @@
     textEl.textContent = text;
   }
 
+  function sendRuntimeMessage(message) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        resolve(response);
+      });
+    });
+  }
+
+  async function getDownloadedFilesSafe() {
+    try {
+      const response = await sendRuntimeMessage({ action: 'getDownloaded' });
+      return response && typeof response === 'object' ? response : {};
+    } catch (err) {
+      console.warn('[SCH PDF Easy] 다운로드 기록 조회 실패:', err);
+      return {};
+    }
+  }
+
   // ──────────────────────────────────────────────
   // 3. injector.js와 CustomEvent 통신 (강의콘텐츠)
   // ──────────────────────────────────────────────
@@ -159,19 +182,28 @@
   }
 
   async function scanCanvasFiles(courseId) {
+    const allFiles = [];
+    let nextUrl =
+      `/api/v1/courses/${courseId}/files?` +
+      `content_types[]=application/pdf` +
+      `&content_types[]=application/vnd.ms-powerpoint` +
+      `&content_types[]=application/vnd.openxmlformats-officedocument.presentationml.presentation` +
+      `&per_page=100&sort=created_at&order=desc`;
+
     try {
-      const res = await fetch(
-        `/api/v1/courses/${courseId}/files?` +
-          `content_types[]=application/pdf` +
-          `&content_types[]=application/vnd.ms-powerpoint` +
-          `&content_types[]=application/vnd.openxmlformats-officedocument.presentationml.presentation` +
-          `&per_page=100&sort=created_at&order=desc`,
-        { credentials: 'include' }
-      );
-      if (!res.ok) return [];
-      const files = await res.json();
-      if (!Array.isArray(files)) return [];
-      return files
+      while (nextUrl) {
+        const res = await fetch(nextUrl, { credentials: 'include' });
+        if (!res.ok) break;
+
+        const files = await res.json();
+        if (!Array.isArray(files)) break;
+        allFiles.push(...files);
+
+        const linkHeader = res.headers.get('Link');
+        nextUrl = Shared.getNextLinkFromHeader ? Shared.getNextLinkFromHeader(linkHeader) : null;
+      }
+
+      return allFiles
         // f.id 또는 f.url 누락 시 제외 — cf_undefined contentId / undefined directUrl 방지
         .filter((f) => f.id && f.url)
         .map((f) => {
@@ -265,21 +297,13 @@
       }
     }
 
-    // 결과 병합 (contentId 기준 중복 제거)
-    const seen = new Set();
-    const allPDFs = [];
-
     const reduxPDFs = (finalRedux.success ? finalRedux.pdfs : []).map((p) => ({
       ...p,
       type: p.type || 'commons',
     }));
-
-    for (const pdf of [...reduxPDFs, ...canvasFiles]) {
-      if (!seen.has(pdf.contentId)) {
-        seen.add(pdf.contentId);
-        allPDFs.push(pdf);
-      }
-    }
+    const allPDFs = Shared.mergeUniqueByContentId
+      ? Shared.mergeUniqueByContentId(reduxPDFs, canvasFiles)
+      : [...reduxPDFs, ...canvasFiles];
 
     if (allPDFs.length === 0) {
       const reason = !finalRedux.success ? finalRedux.error || 'PDF 없음' : 'PDF 없음';
@@ -290,9 +314,7 @@
 
     currentPDFs = allPDFs;
 
-    downloadedFiles = await new Promise((resolve) => {
-      chrome.runtime.sendMessage({ action: 'getDownloaded' }, resolve);
-    });
+    downloadedFiles = await getDownloadedFilesSafe();
 
     const newCount = currentPDFs.filter((p) => !downloadedFiles[p.contentId]).length;
     const sourceLabel = canvasFiles.length > 0 && !finalRedux.success ? ' (강의자료실)' : '';
@@ -334,8 +356,19 @@
         const btn = e.currentTarget;
         btn.disabled = true;
         btn.innerHTML = I.spinner;
-        await downloadSingle(pdf);
-        markItemDone(btn, pdf.contentId);
+        try {
+          const succeeded = await downloadSingle(pdf);
+          if (succeeded) {
+            markItemDone(btn, pdf.contentId);
+            return;
+          }
+        } catch (err) {
+          console.error(`[SCH PDF Easy] 다운로드 실패: ${pdf.title}`, err);
+          setStatus(`다운로드 실패: ${pdf.title}`, 'error');
+        }
+
+        btn.disabled = false;
+        btn.innerHTML = I.dlSmall;
       });
     });
   }
@@ -363,39 +396,47 @@
   // ──────────────────────────────────────────────
 
   async function downloadSingle(pdf) {
-    try {
-      const downloadUrl = await getDownloadUrl(pdf);
-      const filename = `${sanitizeFilename(pdf.title)}.${pdf.ext || 'pdf'}`;
-      // directUrl 또는 lx_resource는 &file_name 파라미터 불필요 (URL 구조 다름)
-      const urlWithName = (pdf.directUrl || pdf.type === 'lx_resource')
-        ? downloadUrl
-        : `${downloadUrl}&file_name=${encodeURIComponent(pdf.title)}`;
+    const downloadUrl = await getDownloadUrl(pdf);
+    const filename = `${sanitizeFilename(pdf.title)}.${pdf.ext || 'pdf'}`;
+    // directUrl 또는 lx_resource는 &file_name 파라미터 불필요 (URL 구조 다름)
+    const urlWithName = (pdf.directUrl || pdf.type === 'lx_resource')
+      ? downloadUrl
+      : `${downloadUrl}&file_name=${encodeURIComponent(pdf.title)}`;
 
-      await new Promise((resolve) => {
-        chrome.runtime.sendMessage(
-          { action: 'downloadPDF', url: urlWithName, filename, contentId: pdf.contentId, title: pdf.title },
-          resolve
-        );
-      });
+    const response = await sendRuntimeMessage({
+      action: 'downloadPDF',
+      url: urlWithName,
+      filename,
+      contentId: pdf.contentId,
+      title: pdf.title,
+    });
 
-      downloadedFiles[pdf.contentId] = { title: pdf.title, downloadedAt: new Date().toISOString() };
-    } catch (err) {
-      console.error(`[SCH PDF Easy] 다운로드 실패: ${pdf.title}`, err);
+    if (!(Shared.isDownloadResponseSuccess ? Shared.isDownloadResponseSuccess(response) : response && response.success)) {
+      throw new Error((response && response.error) || '다운로드 요청 실패');
     }
+
+    downloadedFiles[pdf.contentId] = { title: pdf.title, downloadedAt: new Date().toISOString() };
+    return true;
   }
 
   async function downloadNew() {
     if (isRunning) return;
     isRunning = true;
-    await downloadBatch(currentPDFs.filter((p) => !downloadedFiles[p.contentId]));
-    isRunning = false;
+    try {
+      await downloadBatch(currentPDFs.filter((p) => !downloadedFiles[p.contentId]));
+    } finally {
+      isRunning = false;
+    }
   }
 
   async function downloadAll() {
     if (isRunning) return;
     isRunning = true;
-    await downloadBatch(currentPDFs);
-    isRunning = false;
+    try {
+      await downloadBatch(currentPDFs);
+    } finally {
+      isRunning = false;
+    }
   }
 
   async function downloadBatch(pdfs) {
@@ -415,6 +456,7 @@
     progressText.textContent = `0/${pdfs.length}`;
 
     let completed = 0;
+    let failed = 0;
     const total = pdfs.length;
     const queue = [...pdfs];
 
@@ -424,11 +466,12 @@
         const pdf = queue.shift();
 
         try {
-          await downloadSingle(pdf);
+          const succeeded = await downloadSingle(pdf);
           // CSS.escape: contentId에 ] 또는 " 포함 시 selector 파싱 오류 방지
           const btn = document.querySelector(`[data-content-id="${CSS.escape(pdf.contentId)}"]`);
-          if (btn) markItemDone(btn, pdf.contentId);
+          if (btn && succeeded) markItemDone(btn, pdf.contentId);
         } catch (err) {
+          failed++;
           console.error(`[SCH PDF Easy] 실패: ${pdf.title}`, err);
         }
 
@@ -443,7 +486,11 @@
       Array.from({ length: Math.min(DL_CONCURRENCY, total) }, worker)
     );
 
-    setStatus(`${completed}개 다운로드 완료`, 'ok');
+    if (failed > 0) {
+      setStatus(`${completed - failed}개 다운로드 완료, ${failed}개 실패`, 'warn');
+    } else {
+      setStatus(`${completed}개 다운로드 완료`, 'ok');
+    }
 
     const remaining = currentPDFs.filter((p) => !downloadedFiles[p.contentId]).length;
     if (remaining === 0) {
@@ -460,9 +507,7 @@
 
   async function clearHistory() {
     if (!confirm('다운로드 기록을 초기화하시겠습니까?\n(이미 다운로드한 파일은 삭제되지 않습니다)')) return;
-    await new Promise((resolve) => {
-      chrome.runtime.sendMessage({ action: 'clearDownloaded' }, resolve);
-    });
+    await sendRuntimeMessage({ action: 'clearDownloaded' });
     downloadedFiles = {};
     scanForPDFs();
   }
