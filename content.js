@@ -25,7 +25,7 @@
 
   const COMMONS_BASE = 'https://commons.sch.ac.kr';
   const CONTENT_API = `${COMMONS_BASE}/viewer/ssplayer/uniplayer_support/content.php`;
-  const VERSION = '1.6.8';
+  const VERSION = '1.6.9';
   const DL_CONCURRENCY = 5;
   const Shared = globalThis.SpeShared || {};
 
@@ -261,7 +261,7 @@
     }
 
     // fallback: 구형 commons 다운로드 URL 패턴
-    return `${COMMONS_BASE}/index.php?module=xn_media_content2013&act=dispXn_media_content2013DownloadWebFile&site_id=sch1000001&content_id=${effectiveContentId}&web_storage_id=301&file_subpath=contents%5Cweb_files%5Coriginal.pdf`;
+    return `${COMMONS_BASE}/index.php?module=xn_media_content2013&act=dispXn_media_content2013DownloadWebFile&site_id=sch1000001&content_id=${encodeURIComponent(effectiveContentId)}&web_storage_id=301&file_subpath=contents%5Cweb_files%5Coriginal.pdf`;
   }
 
   // ──────────────────────────────────────────────

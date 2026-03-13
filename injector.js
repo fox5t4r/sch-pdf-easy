@@ -300,10 +300,13 @@
   // React 내부 인스턴스 키 탐색 헬퍼
   // ────────────────────────────────────────────────────────
 
+  var _cachedReactKey = null;
   function findReactInternalKey(el) {
+    if (_cachedReactKey && el[_cachedReactKey]) return _cachedReactKey;
     var keys = Object.keys(el);
     for (var i = 0; i < keys.length; i++) {
       if (keys[i].startsWith('__reactFiber') || keys[i].startsWith('__reactInternalInstance')) {
+        _cachedReactKey = keys[i];
         return keys[i];
       }
     }
