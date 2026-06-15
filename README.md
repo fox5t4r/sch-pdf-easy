@@ -49,6 +49,14 @@ git clone https://github.com/fox5t4r/sch-pdf-easy.git
 
 ---
 
+## 기술 스택
+
+| 기술명 | 용도 |
+|---|---|
+| `JavaScript` | DOM 조작을 위해 사용 |
+
+---
+
 ## 파일 구조
 
 ```
@@ -68,10 +76,10 @@ sch-pdf-easy/
 
 ```
 content.js  ──(CustomEvent '__SPE_SCAN_REQUEST')──▶  injector.js
-                                                          │
+                                                           │
                                                강의콘텐츠: Redux Store 탐색
                                                강의자료실: DOM 스캔
-                                                          │
+                                                           │
 content.js  ◀─(CustomEvent '__SPE_SCAN_RESULT')───────────┘
     │
     ├─ Canvas File API 결과와 병합 (contentId 기준 중복 제거)
