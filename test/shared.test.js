@@ -4,10 +4,23 @@ const assert = require('node:assert/strict');
 const {
   buildLxResourceEntry,
   getNextLinkFromHeader,
+  isAllowedDownloadUrl,
   isDownloadResponseSuccess,
   mergeUniqueByContentId,
+  normalizeDownloadCandidate,
+  redactIdentifier,
+  redactUrl,
+  resolveAllowedDownloadUrl,
+  sanitizeFilename,
   shouldRefreshLxCache,
 } = require('../shared.js');
+
+const {
+  appendFileNameParam,
+  buildFallbackCommonsDownloadUrl,
+  extractXmlTag,
+  resolveCommonsDownloadUrlFromXml,
+} = require('../download_utils.js');
 
 test('mergeUniqueByContentId keeps first item for duplicated content ids', () => {
   const merged = mergeUniqueByContentId(
@@ -83,4 +96,55 @@ test('isDownloadResponseSuccess only accepts explicit success responses', () => 
   assert.equal(isDownloadResponseSuccess({ success: true }), true);
   assert.equal(isDownloadResponseSuccess({ success: false, error: 'Download interrupted' }), false);
   assert.equal(isDownloadResponseSuccess(undefined), false);
+});
+
+test('download URL allowlist only permits HTTPS LMS/Commons targets', () => {
+  assert.equal(isAllowedDownloadUrl('https://medlms.sch.ac.kr/files/1'), true);
+  assert.equal(isAllowedDownloadUrl('https://commons.sch.ac.kr/files/1'), true);
+  assert.equal(isAllowedDownloadUrl('/files/1', 'https://medlms.sch.ac.kr'), true);
+  assert.equal(isAllowedDownloadUrl('http://medlms.sch.ac.kr/files/1'), false);
+  assert.equal(isAllowedDownloadUrl('https://evil.example/files/1'), false);
+  assert.equal(resolveAllowedDownloadUrl('/files/1', 'https://medlms.sch.ac.kr'), 'https://medlms.sch.ac.kr/files/1');
+});
+
+test('sanitizeFilename removes path traversal and invalid filename characters', () => {
+  assert.equal(sanitizeFilename('../bad/name?.pdf'), '_bad_name_.pdf');
+  assert.equal(sanitizeFilename('  ...  ', 'download.pdf'), 'download.pdf');
+  assert.equal(sanitizeFilename('lecture\u0000 name.pptx'), 'lecture_ name.pptx');
+});
+
+test('normalizeDownloadCandidate rejects invalid scan results', () => {
+  assert.equal(normalizeDownloadCandidate({ title: 'x', contentId: '', ext: 'pdf' }), null);
+  assert.equal(normalizeDownloadCandidate({ title: 'x', contentId: '1', ext: 'exe' }), null);
+  assert.equal(normalizeDownloadCandidate({ title: 'x', contentId: '1', ext: 'pdf', directUrl: 'javascript:alert(1)' }), null);
+  assert.deepEqual(
+    normalizeDownloadCandidate({ title: 'x', contentId: '1', ext: 'pdf', directUrl: '/files/1' }),
+    { title: 'x', contentId: '1', section: '', subsection: '', type: 'commons', ext: 'pdf', directUrl: '/files/1' }
+  );
+});
+
+test('diagnostic redaction masks identifiers and URL query strings', () => {
+  assert.equal(redactIdentifier('abcdef1234567890'), 'abcdef…redacted');
+  assert.equal(redactIdentifier('short'), '[redacted]');
+  assert.equal(
+    redactUrl('https://medlms.sch.ac.kr/courses/49561/external_tools/1?token=secret'),
+    'https://medlms.sch.ac.kr/courses/[id]/external_tools/1?[redacted]'
+  );
+});
+
+test('download utils parse XML and build extension-aware fallback URLs', () => {
+  const xml = '<root><content_download_uri>/download.php?a=1&amp;b=2</content_download_uri></root>';
+  assert.equal(extractXmlTag(xml, 'content_download_uri'), '/download.php?a=1&b=2');
+  assert.equal(
+    resolveCommonsDownloadUrlFromXml(xml, { contentId: 'cid', ext: 'pdf', type: 'commons' }),
+    'https://commons.sch.ac.kr/download.php?a=1&b=2'
+  );
+
+  assert.match(buildFallbackCommonsDownloadUrl('cid', 'pdf'), /original\.pdf/);
+  assert.match(buildFallbackCommonsDownloadUrl('cid', 'ppt'), /original\.ppt/);
+  assert.match(buildFallbackCommonsDownloadUrl('cid', 'pptx'), /original\.pptx/);
+  assert.equal(
+    appendFileNameParam('https://commons.sch.ac.kr/download.php?a=1', '강의 1'),
+    'https://commons.sch.ac.kr/download.php?a=1&file_name=%EA%B0%95%EC%9D%98%201'
+  );
 });

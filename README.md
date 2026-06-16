@@ -98,7 +98,7 @@ flowchart LR
 | UI Layer        | Content Script, CSS                               | LMS 페이지 위에 확장 프로그램 패널을 표시하고 사용자 입력을 처리하기 위해 사용                          |
 | Page Analysis   | MAIN world Injector                               | Content Script의 isolated world 제약 때문에 페이지 내부 React/Redux 상태에 접근하기 위해 사용 |
 | Background Task | Background Service Worker                         | 다운로드 요청 검증, 다운로드 실행, 기록 저장을 UI와 분리하기 위해 사용                              |
-| Browser API     | `chrome.downloads`, `chrome.storage`, `activeTab` | 파일 저장, 다운로드 기록 유지, 현재 LMS 탭 접근을 위해 사용                                   |
+| Browser API     | `chrome.downloads`, `chrome.storage` | 파일 저장, 다운로드 기록 유지에 사용                                   |
 | Data Extraction | React/Redux 탐색, DOM fallback                      | LMS 페이지 구조 차이와 변경 가능성에 대응하기 위해 사용                                       |
 | Quality         | Node.js test runner, GitHub Actions               | 문법 검사와 테스트를 자동화하기 위해 사용                                                 |
 
@@ -113,6 +113,7 @@ sch-pdf-easy/
 ├── content.js         # 확장 UI, 사용자 이벤트, 스캔/다운로드 흐름 조율
 ├── injector.js        # 페이지 내부 자료 탐색, React/Redux 접근, DOM fallback
 ├── shared.js          # 공통 유틸리티
+├── download_utils.js  # 다운로드 URL 구성/검증 유틸리티
 ├── style.css          # 확장 프로그램 UI 스타일
 ├── test/              # 테스트 코드
 ├── .github/
@@ -192,9 +193,8 @@ chrome://extensions
 | --------------------- | -------------------------- |
 | `downloads`           | 파일을 `다운로드/SCH_PDF/` 경로에 저장 |
 | `storage`             | 다운로드 기록을 브라우저에 저장          |
-| `activeTab`           | 현재 열려 있는 LMS 탭에 접근         |
 | `medlms.sch.ac.kr/*`  | 강의 페이지 스캔 및 파일 정보 조회       |
-| `commons.sch.ac.kr/*` | 콘텐츠 다운로드 URL 조회            |
+| `commons.sch.ac.kr/*` | background에서 콘텐츠 다운로드 URL 조회 |
 
 이 확장 프로그램은 별도의 외부 서버로 사용자 데이터를 전송하지 않습니다. 다운로드 기록은 브라우저 내부 저장소를 사용합니다.
 
@@ -400,7 +400,7 @@ LMS가 파일 제공 도메인을 변경하거나 CDN 도메인을 추가하면 
 
 * 최신 Releases 버전을 사용 중인지 확인합니다.
 * 기존 확장 프로그램을 삭제하고 최신 zip을 다시 로드합니다.
-* 동일 문제가 반복되면 진단 정보를 복사해 Issue에 첨부합니다.
+* 동일 문제가 반복되면 진단 정보를 복사해 Issue에 첨부합니다. 기본 진단은 URL과 콘텐츠 식별자를 마스킹하지만, 공개 Issue에 올리기 전 민감정보가 없는지 한 번 더 확인합니다.
 
 ### 기록을 초기화하고 싶음
 
@@ -416,25 +416,22 @@ LMS가 파일 제공 도메인을 변경하거나 CDN 도메인을 추가하면 
 ### 현재 `.gitignore`에서 제외 중인 항목
 
 ```gitignore
+# OS
 .DS_Store
-*.crx
-*.pem
-*.zip
+Thumbs.db
+
+# Dependencies
 node_modules/
-.idea/
-.vscode/
-```
 
-### 추가로 제외를 권장하는 항목
-
-현재 프로젝트에는 별도 빌드 산출물이 없지만, 추후 패키징이나 테스트 환경이 확장될 경우 아래 항목을 `.gitignore`에 추가할 수 있습니다.
-
-```gitignore
 # Build / test outputs
 build/
 dist/
 out/
 coverage/
+
+# Packaged Chrome extension
+*.crx
+*.zip
 
 # Environment variables
 .env
@@ -442,6 +439,7 @@ coverage/
 !.env.example
 
 # Secrets / keys / certificates
+*.pem
 *.key
 *.p12
 *.crt
@@ -453,6 +451,10 @@ token.json
 tokens.json
 *secret*.json
 *token*.json
+
+# IDE
+.idea/
+.vscode/
 ```
 
 ### 로컬 정리 명령어

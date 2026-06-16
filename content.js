@@ -23,8 +23,6 @@
 (function () {
   'use strict';
 
-  const COMMONS_BASE = 'https://commons.sch.ac.kr';
-  const CONTENT_API = `${COMMONS_BASE}/viewer/ssplayer/uniplayer_support/content.php`;
   const VERSION = '1.6.9';
   const DL_CONCURRENCY = 5;
   const Shared = globalThis.SpeShared || {};
@@ -151,16 +149,18 @@
   function requestScanFromInjector() {
     return new Promise((resolve) => {
       let resolved = false;
+      const requestId = Shared.createRequestId ? Shared.createRequestId() : String(Date.now());
 
       function onResult(e) {
-        if (resolved) return;
+        const detail = e.detail || {};
+        if (resolved || detail.requestId !== requestId) return;
         resolved = true;
         document.removeEventListener('__SPE_SCAN_RESULT', onResult);
-        resolve(e.detail);
+        resolve(validateScanResult(detail));
       }
 
       document.addEventListener('__SPE_SCAN_RESULT', onResult);
-      document.dispatchEvent(new CustomEvent('__SPE_SCAN_REQUEST'));
+      document.dispatchEvent(new CustomEvent('__SPE_SCAN_REQUEST', { detail: { requestId } }));
 
       setTimeout(() => {
         if (!resolved) {
@@ -170,6 +170,34 @@
         }
       }, 10000);
     });
+  }
+
+  function validateScanResult(detail) {
+    if (!detail || typeof detail !== 'object') {
+      return { success: false, error: 'invalid scan result', pdfs: [] };
+    }
+    if (!detail.success) {
+      return { success: false, error: detail.error || 'scan failed', pdfs: [] };
+    }
+    if (!Array.isArray(detail.pdfs)) {
+      return { success: false, error: 'invalid pdf list', pdfs: [] };
+    }
+
+    const pdfs = [];
+    let dropped = 0;
+    detail.pdfs.forEach((pdf) => {
+      const normalized = Shared.normalizeDownloadCandidate
+        ? Shared.normalizeDownloadCandidate(pdf)
+        : pdf;
+      if (normalized) pdfs.push(normalized);
+      else dropped++;
+    });
+
+    return {
+      success: true,
+      pdfs,
+      warning: dropped > 0 ? `검증 실패 항목 ${dropped}개 제외` : '',
+    };
   }
 
   // ──────────────────────────────────────────────
@@ -208,7 +236,7 @@
         .filter((f) => f.id && f.url)
         .map((f) => {
           const fname = f.display_name || f.filename || '';
-          const ext = /\.pptx$/i.test(fname) ? 'pptx' : /\.ppt$/i.test(fname) ? 'ppt' : 'pdf';
+          const ext = Shared.getSupportedExtFromName ? Shared.getSupportedExtFromName(fname) : (/\.pptx$/i.test(fname) ? 'pptx' : /\.ppt$/i.test(fname) ? 'ppt' : 'pdf');
           return {
             title: fname.replace(/\.(pdf|pptx?)$/i, '') || 'untitled',
             contentId: `cf_${f.id}`,
@@ -229,39 +257,16 @@
   // ──────────────────────────────────────────────
 
   async function getDownloadUrl(pdf) {
-    // Canvas 파일 / 페이지 첨부 / 직접 업로드: URL이 이미 있음
-    if (pdf.directUrl) {
-      if (pdf.directUrl.startsWith('/')) {
-        return `https://medlms.sch.ac.kr${pdf.directUrl}`;
-      }
-      return pdf.directUrl;
+    const response = await sendRuntimeMessage({
+      action: 'resolveDownloadUrl',
+      pdf,
+    });
+
+    if (!(Shared.isDownloadResponseSuccess ? Shared.isDownloadResponseSuccess(response) : response && response.success)) {
+      throw new Error((response && response.error) || '다운로드 URL 조회 실패');
     }
 
-    // Commons 콘텐츠: content.php XML API로 다운로드 URL 획득
-    // lx_resource는 commons_content.content_id(lxContentId)를 사용해야 정상 응답
-    const effectiveContentId = (pdf.type === 'lx_resource' && pdf.lxContentId)
-      ? pdf.lxContentId
-      : pdf.contentId;
-    const url = `${CONTENT_API}?content_id=${encodeURIComponent(effectiveContentId)}&_=${Date.now()}`;
-    const response = await fetch(url);
-    const text = await response.text();
-    const xml = new DOMParser().parseFromString(text, 'text/xml');
-    const downloadUri = xml.querySelector('content_download_uri');
-    if (downloadUri && downloadUri.textContent) {
-      return `${COMMONS_BASE}${downloadUri.textContent}`;
-    }
-
-    // sharedocs 타입: content_uri에서 source 경로 구성 시도
-    const contentType = xml.querySelector('content_type');
-    const contentUri = xml.querySelector('content_uri');
-    if (contentType && contentType.textContent === 'sharedocs' && contentUri && contentUri.textContent) {
-      // content_uri: .../contents/web_files → .../contents/source/original.pdf 시도
-      const base = contentUri.textContent.replace(/\/web_files\/?$/, '');
-      return `${base}/source/original.${pdf.ext || 'pdf'}`;
-    }
-
-    // fallback: 구형 commons 다운로드 URL 패턴
-    return `${COMMONS_BASE}/index.php?module=xn_media_content2013&act=dispXn_media_content2013DownloadWebFile&site_id=sch1000001&content_id=${encodeURIComponent(effectiveContentId)}&web_storage_id=301&file_subpath=contents%5Cweb_files%5Coriginal.pdf`;
+    return response.url;
   }
 
   // ──────────────────────────────────────────────
@@ -301,9 +306,11 @@
       ...p,
       type: p.type || 'commons',
     }));
-    const allPDFs = Shared.mergeUniqueByContentId
+    const allPDFs = (Shared.mergeUniqueByContentId
       ? Shared.mergeUniqueByContentId(reduxPDFs, canvasFiles)
-      : [...reduxPDFs, ...canvasFiles];
+      : [...reduxPDFs, ...canvasFiles])
+      .map((pdf) => Shared.normalizeDownloadCandidate ? Shared.normalizeDownloadCandidate(pdf) : pdf)
+      .filter(Boolean);
 
     if (allPDFs.length === 0) {
       const reason = !finalRedux.success ? finalRedux.error || 'PDF 없음' : 'PDF 없음';
@@ -318,7 +325,8 @@
 
     const newCount = currentPDFs.filter((p) => !downloadedFiles[p.contentId]).length;
     const sourceLabel = canvasFiles.length > 0 && !finalRedux.success ? ' (강의자료실)' : '';
-    setStatus(`PDF ${currentPDFs.length}개${sourceLabel} (새 파일: ${newCount}개)`, 'ok');
+    const warningLabel = finalRedux.warning ? ` / ${finalRedux.warning}` : '';
+    setStatus(`PDF ${currentPDFs.length}개${sourceLabel} (새 파일: ${newCount}개)${warningLabel}`, 'ok');
 
     renderPDFList();
 
@@ -397,15 +405,12 @@
 
   async function downloadSingle(pdf) {
     const downloadUrl = await getDownloadUrl(pdf);
-    const filename = `${sanitizeFilename(pdf.title)}.${pdf.ext || 'pdf'}`;
-    // directUrl 또는 lx_resource는 &file_name 파라미터 불필요 (URL 구조 다름)
-    const urlWithName = (pdf.directUrl || pdf.type === 'lx_resource')
-      ? downloadUrl
-      : `${downloadUrl}&file_name=${encodeURIComponent(pdf.title)}`;
+    const safeTitle = Shared.sanitizeFilename ? Shared.sanitizeFilename(pdf.title, 'download') : sanitizeFilename(pdf.title);
+    const filename = `${safeTitle}.${pdf.ext || 'pdf'}`;
 
     const response = await sendRuntimeMessage({
       action: 'downloadPDF',
-      url: urlWithName,
+      url: downloadUrl,
       filename,
       contentId: pdf.contentId,
       title: pdf.title,
@@ -521,10 +526,14 @@
     btn.textContent = '수집 중...';
     btn.disabled = true;
 
+    const redactId = Shared.redactIdentifier || ((value) => value ? '[redacted]' : '');
+    const redactUrl = Shared.redactUrl || ((value) => value ? '[redacted-url]' : '');
+
     const lines = [];
     lines.push(`=== SCH PDF Easy v${VERSION} 진단 ===`);
-    lines.push(`URL: ${window.location.href}`);
+    lines.push(`URL: ${redactUrl(window.location.href)}`);
     lines.push(`시간: ${new Date().toISOString()}`);
+    lines.push('주의: 기본 진단은 공개 Issue 첨부를 위해 식별자와 URL을 마스킹합니다.');
     lines.push('');
 
     // injector에서 LX 캐시 상태 수집
@@ -541,17 +550,17 @@
     });
 
     if (inj) {
-      lines.push(`LX courseId: ${inj.courseId || '없음'}`);
+      lines.push(`LX courseId: ${redactId(inj.courseId) || '없음'}`);
       lines.push(`LX resources (캐시): ${inj.resourceCount}개`);
       if (inj.resourceKeys) lines.push(`Resource 키: ${inj.resourceKeys}`);
-      lines.push(`캡처된 LX API URLs: ${inj.interceptedUrls || '없음'}`);
-      if (inj.iframeUrl) lines.push(`iframe URL: ${inj.iframeUrl}`);
+      lines.push(`캡처된 LX API URLs: ${inj.interceptedUrls ? '[redacted]' : '없음'}`);
+      if (inj.iframeUrl) lines.push(`iframe URL: ${redactUrl(inj.iframeUrl)}`);
       lines.push(`React 버전: ${inj.reactVersion || '알 수 없음'}`);
-      lines.push(`React props 추출: ${inj.reactExtractResult || '미테스트'}`);
+      lines.push(`React props 추출: ${inj.reactExtractResult ? String(inj.reactExtractResult).replace(/[0-9a-f]{10,}/gi, '[redacted-id]') : '미테스트'}`);
       lines.push(`.xn-resource-item React 키: ${inj.itemReactKeys || '확인 불가'}`);
       if (inj.sample) {
-        lines.push(`샘플 resource_id: ${inj.sample.resource_id}`);
-        lines.push(`샘플 commons_content.content_id: ${inj.sample.commonsContentId || '없음'}`);
+        lines.push(`샘플 resource_id: ${redactId(inj.sample.resource_id)}`);
+        lines.push(`샘플 commons_content.content_id: ${redactId(inj.sample.commonsContentId) || '없음'}`);
         lines.push(`샘플 progress_support: ${inj.sample.commonsProgressSupport}`);
       }
     } else {
@@ -559,30 +568,31 @@
     }
     lines.push('');
 
-    // LX resources API 직접 테스트
+    // LX resources API 직접 테스트: 원문 body는 민감정보 가능성이 있어 상태와 구조만 기록
     const courseId = (window.location.pathname.match(/\/courses\/(\d+)/) || [])[1];
     if (courseId) {
-      lines.push(`LX resources API 직접 테스트 (courseId=${courseId}):`);
+      lines.push(`LX resources API 직접 테스트 (courseId=${redactId(courseId)}):`);
       try {
         const r = await fetch(`/learningx/api/v1/courses/${courseId}/resources`, { credentials: 'include' });
         lines.push(`  HTTP 상태: ${r.status}`);
-        const body = await r.text();
         if (r.ok) {
           try {
-            const parsed = JSON.parse(body);
+            const parsed = await r.json();
             const arr = Array.isArray(parsed) ? parsed : null;
             if (arr) {
               lines.push(`  결과: ${arr.length}개`);
               if (arr[0]) lines.push(`  첫번째 키: ${Object.keys(arr[0]).join(', ')}`);
-              if (arr[0] && arr[0].commons_content) lines.push(`  commons_content.content_id: ${arr[0].commons_content.content_id || '없음'}`);
+              if (arr[0] && arr[0].commons_content) {
+                lines.push(`  commons_content.content_id: ${redactId(arr[0].commons_content.content_id) || '없음'}`);
+              }
             } else {
-              lines.push(`  결과: 배열 아님 — ${body.slice(0, 100)}`);
+              lines.push('  결과: 배열 아님');
             }
           } catch (e) {
-            lines.push(`  JSON 파싱 실패: ${body.slice(0, 100)}`);
+            lines.push(`  JSON 파싱 실패: ${e.message}`);
           }
         } else {
-          lines.push(`  오류 응답: ${body.slice(0, 150)}`);
+          lines.push('  오류 응답: 본문 생략');
         }
       } catch (e) {
         lines.push(`  예외: ${e.message}`);
@@ -590,41 +600,18 @@
       lines.push('');
     }
 
-    // 스캔된 파일 없으면 먼저 스캔
     if (currentPDFs.length === 0) {
       lines.push('스캔된 파일 없음 — 스캔 후 다시 시도하세요.');
     } else {
       lines.push(`스캔된 파일: ${currentPDFs.length}개`);
       lines.push('');
-      for (let i = 0; i < currentPDFs.length; i++) {
-        const pdf = currentPDFs[i];
+      currentPDFs.forEach((pdf, i) => {
         lines.push(`[파일 ${i}] ${pdf.title}`);
         lines.push(`  type: ${pdf.type}, ext: ${pdf.ext}`);
-        lines.push(`  contentId: ${pdf.contentId}`);
-        if (pdf.lxContentId) lines.push(`  lxContentId: ${pdf.lxContentId}`);
-        if (pdf.directUrl) { lines.push(`  directUrl: ${pdf.directUrl}`); continue; }
-
-        const eid = (pdf.type === 'lx_resource' && pdf.lxContentId) ? pdf.lxContentId : pdf.contentId;
-        try {
-          const resp = await fetch(`${CONTENT_API}?content_id=${encodeURIComponent(eid)}&_=${Date.now()}`);
-          const text = await resp.text();
-          lines.push(`  content.php 상태: ${resp.status}`);
-          lines.push(`  content.php 원문: ${text.substring(0, 1000).replace(/\n/g, ' ')}`);
-          try {
-            const xmlDoc = new DOMParser().parseFromString(text, 'text/xml');
-            const fields = ['content_type','content_uri','content_download_uri','content_name','content_id'];
-            fields.forEach(f => {
-              const el = xmlDoc.querySelector(f);
-              if (el) lines.push(`  [XML] ${f}: ${el.textContent}`);
-            });
-          } catch(xe) {
-            lines.push(`  XML 파싱 실패: ${xe.message}`);
-          }
-        } catch (e) {
-          lines.push(`  content.php 오류: ${e.message}`);
-        }
-        lines.push('');
-      }
+        lines.push(`  contentId: ${redactId(pdf.contentId)}`);
+        if (pdf.lxContentId) lines.push(`  lxContentId: ${redactId(pdf.lxContentId)}`);
+        if (pdf.directUrl) lines.push(`  directUrl: ${redactUrl(pdf.directUrl)}`);
+      });
     }
 
     const output = lines.join('\n');

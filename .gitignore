@@ -1,7 +1,39 @@
+# OS
 .DS_Store
-*.crx
-*.pem
-*.zip
+Thumbs.db
+
+# Dependencies
 node_modules/
+
+# Build / test outputs
+build/
+dist/
+out/
+coverage/
+
+# Packaged Chrome extension
+*.crx
+*.zip
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Secrets / keys / certificates
+*.pem
+*.key
+*.p12
+*.crt
+*.cert
+secrets/
+.secret/
+.tokens/
+token.json
+tokens.json
+*secret*.json
+*token*.json
+
+# IDE
 .idea/
 .vscode/
