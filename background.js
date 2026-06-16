@@ -12,8 +12,12 @@ if (typeof importScripts === 'function') {
 const Shared = globalThis.SpeShared;
 const DownloadUtils = globalThis.SpeDownloadUtils;
 const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000; // 5분
+const AUTO_DOWNLOAD_COOLDOWN_MS = 10 * 60 * 1000;
+const AUTO_DOWNLOAD_COURSE_LIMIT = 100;
+const AUTO_DOWNLOAD_DEFAULT_CONCURRENCY = 2;
 const _pendingStartedDownloads = new Map();
 const PENDING_DOWNLOADS_KEY = 'pendingStartedDownloads';
+let _autoDownloadRun = null;
 
 // 스토리지 쓰기 직렬화: 동시 다운로드 완료 시 read-modify-write 경쟁 방지
 let _writeQueue = Promise.resolve();
@@ -70,10 +74,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === 'getSettings') {
-    chrome.storage.local.get({ downloadConcurrency: 5 }, (data) => {
+    chrome.storage.local.get({ downloadConcurrency: 5, autoDownloadOnLogin: true }, (data) => {
       const downloadConcurrency = Shared.normalizeDownloadConcurrency(data.downloadConcurrency, 5, 8);
-      sendResponse({ success: true, downloadConcurrency });
+      sendResponse({
+        success: true,
+        downloadConcurrency,
+        autoDownloadOnLogin: data.autoDownloadOnLogin !== false,
+      });
     });
+    return true;
+  }
+
+  if (message.action === 'maybeStartAutoDownload') {
+    maybeStartAutoDownload()
+      .then((result) => sendResponse(result))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
   }
 
@@ -126,6 +141,255 @@ async function resolveDownloadUrl(rawPdf) {
   const allowedUrl = Shared.resolveAllowedDownloadUrl(resolvedUrl);
   if (!allowedUrl) throw new Error('Blocked: untrusted resolved URL');
   return allowedUrl;
+}
+
+async function maybeStartAutoDownload() {
+  const settings = await chrome.storage.local.get({
+    autoDownloadOnLogin: true,
+    autoDownloadLastStartedAt: 0,
+    downloadConcurrency: AUTO_DOWNLOAD_DEFAULT_CONCURRENCY,
+  });
+
+  if (settings.autoDownloadOnLogin === false) {
+    return { success: true, skipped: true, reason: 'auto download disabled' };
+  }
+
+  if (_autoDownloadRun) {
+    return { success: true, skipped: true, reason: 'already running' };
+  }
+
+  const now = Date.now();
+  if (now - Number(settings.autoDownloadLastStartedAt || 0) < AUTO_DOWNLOAD_COOLDOWN_MS) {
+    return { success: true, skipped: true, reason: 'cooldown' };
+  }
+
+  await chrome.storage.local.set({ autoDownloadLastStartedAt: now });
+  const concurrency = Shared.normalizeDownloadConcurrency(
+    settings.downloadConcurrency,
+    AUTO_DOWNLOAD_DEFAULT_CONCURRENCY,
+    3
+  );
+
+  _autoDownloadRun = runAutoDownloadAllCourses(concurrency)
+    .catch((err) => {
+      console.warn('[SCH PDF Easy] 자동 다운로드 실패:', err);
+      return { success: false, error: err.message };
+    })
+    .finally(() => {
+      _autoDownloadRun = null;
+    });
+
+  return { success: true, started: true };
+}
+
+async function runAutoDownloadAllCourses(concurrency) {
+  const downloadedFiles = await getDownloadedFiles();
+  const courses = await fetchCourses();
+  const candidates = [];
+
+  for (const course of courses.slice(0, AUTO_DOWNLOAD_COURSE_LIMIT)) {
+    try {
+      const [canvasFiles, lxResources] = await Promise.all([
+        fetchCanvasFileCandidates(course),
+        fetchLearningXResourceCandidates(course),
+      ]);
+      candidates.push(...canvasFiles, ...lxResources);
+    } catch (err) {
+      console.debug('[SCH PDF Easy] 자동 다운로드 과목 스캔 실패:', course.id, err.message);
+    }
+  }
+
+  const unique = Shared.mergeUniqueByContentId(candidates)
+    .map((candidate) => Shared.normalizeDownloadCandidate(candidate))
+    .filter((candidate) => {
+      if (!candidate || downloadedFiles[candidate.contentId]) return false;
+      return Shared.getAvailabilityStatus(candidate.availability).downloadable !== false;
+    });
+
+  await chrome.storage.local.set({
+    autoDownloadLastSummary: {
+      checkedAt: new Date().toISOString(),
+      courseCount: courses.length,
+      candidateCount: candidates.length,
+      downloadCount: unique.length,
+    },
+  });
+
+  await runWithConcurrency(unique, concurrency, autoDownloadSingle);
+  return { success: true, courseCount: courses.length, downloadCount: unique.length };
+}
+
+function getDownloadedFiles() {
+  return chrome.storage.local.get('downloadedFiles').then((data) => data.downloadedFiles || {});
+}
+
+async function fetchCourses() {
+  let favorites = [];
+  try {
+    favorites = await fetchPaginatedJson('/api/v1/users/self/favorites/courses?per_page=100');
+  } catch (err) {
+    console.debug('[SCH PDF Easy] 즐겨찾기 과목 조회 실패:', err.message);
+  }
+  const filterCourses = Shared.filterCurrentStudentCourses ||
+    ((courses) => courses.filter((course) => course && course.id));
+  if (favorites.length > 0) return filterCourses(favorites);
+
+  const active = await fetchPaginatedJson('/api/v1/courses?enrollment_state=active&per_page=100');
+  return filterCourses(active);
+}
+
+async function fetchCanvasFileCandidates(course) {
+  const files = await fetchPaginatedJson(
+    `/api/v1/courses/${encodeURIComponent(course.id)}/files?` +
+      'content_types[]=application/pdf' +
+      '&content_types[]=application/vnd.ms-powerpoint' +
+      '&content_types[]=application/vnd.openxmlformats-officedocument.presentationml.presentation' +
+      '&per_page=100&sort=created_at&order=desc'
+  );
+
+  return files
+    .filter((file) => file && file.id && file.url)
+    .map((file) => {
+      const fname = file.display_name || file.filename || '';
+      const ext = Shared.getSupportedExtFromName(fname) || 'pdf';
+      return {
+        title: `${course.name || course.course_code || 'course'} - ${fname.replace(/\.(pdf|pptx?)$/i, '') || 'untitled'}`,
+        contentId: `cf_${file.id}`,
+        section: course.name || course.course_code || '강의자료',
+        subsection: '자동 다운로드',
+        type: 'canvas_file',
+        ext,
+        directUrl: file.url,
+        availability: Shared.normalizeAvailability(file),
+      };
+    });
+}
+
+async function fetchLearningXResourceCandidates(course) {
+  const endpoints = [
+    `/learningx/api/v1/courses/${encodeURIComponent(course.id)}/resources`,
+    `/learningx/api/v1/courses/${encodeURIComponent(course.id)}/resources_db`,
+  ];
+  let resources = [];
+  for (const endpoint of endpoints) {
+    try {
+      resources = await fetchJsonArray(endpoint);
+      if (resources.length > 0) break;
+    } catch (err) {
+      console.debug('[SCH PDF Easy] LearningX API 스캔 실패:', endpoint, err.message);
+    }
+  }
+
+  return resources
+    .map((resource) => buildLearningXCandidate(course, resource))
+    .filter(Boolean);
+}
+
+function buildLearningXCandidate(course, resource) {
+  const commons = resource && resource.commons_content;
+  if (!commons || !commons.content_id) return null;
+
+  const ext = Shared.getSupportedExtFromName(commons.file_name || resource.title || '') ||
+    Shared.getSupportedExtFromName('file.' + (commons.content_type || ''));
+  if (!ext) return null;
+
+  return {
+    title: `${course.name || course.course_code || 'course'} - ${resource.title || commons.file_name || commons.content_name || 'untitled'}`,
+    contentId: extractThumbnailUUID(commons.thumbnail_url) || resource.xn_id || resource.resource_id || commons.content_id,
+    lxContentId: commons.content_id,
+    section: course.name || course.course_code || '강의자료실',
+    subsection: '자동 다운로드',
+    type: 'lx_resource',
+    ext,
+    availability: mergeAvailability(resource, commons),
+  };
+}
+
+function mergeAvailability(primary, secondary) {
+  const first = Shared.normalizeAvailability(primary) || {};
+  const second = Shared.normalizeAvailability(secondary) || {};
+  const merged = {
+    unlockAt: first.unlockAt || second.unlockAt || null,
+    lockAt: first.lockAt || second.lockAt || null,
+    locked: !!(first.locked || second.locked),
+    hidden: !!(first.hidden || second.hidden),
+  };
+  return Shared.normalizeAvailability({ availability: merged });
+}
+
+function extractThumbnailUUID(thumbnailUrl) {
+  const match = String(thumbnailUrl || '').match(/contents\/([^.?/]+)/);
+  return match ? match[1] : null;
+}
+
+async function fetchPaginatedJson(url) {
+  const results = [];
+  let nextUrl = toMedlmsUrl(url);
+  while (nextUrl) {
+    const response = await fetch(nextUrl, { credentials: 'include' });
+    if (response.status === 401 || response.status === 403) return results;
+    if (!response.ok) throw new Error(`API request failed: ${response.status}`);
+
+    const data = await parseProtectedJsonResponse(response);
+    const arr = Array.isArray(data) ? data : (data.courses || data.resources || data.items || data.data || []);
+    if (Array.isArray(arr)) results.push(...arr);
+    const nextLink = Shared.getNextLinkFromHeader(response.headers.get('Link'));
+    nextUrl = nextLink ? toMedlmsUrl(nextLink) : null;
+  }
+  return results;
+}
+
+async function fetchJsonArray(url) {
+  const response = await fetch(toMedlmsUrl(url), { credentials: 'include' });
+  if (response.status === 401 || response.status === 403) return [];
+  if (!response.ok) throw new Error(`API request failed: ${response.status}`);
+  const data = await parseProtectedJsonResponse(response);
+  const arr = Array.isArray(data) ? data : (data.resources || data.items || data.data || []);
+  return Array.isArray(arr) ? arr : [];
+}
+
+function toMedlmsUrl(url) {
+  return new URL(url, DownloadUtils.MEDLMS_BASE).toString();
+}
+
+async function parseProtectedJsonResponse(response) {
+  const text = await response.text();
+  const cleanText = Shared.stripJsonProtectionPrefix
+    ? Shared.stripJsonProtectionPrefix(text)
+    : String(text || '').replace(/^\s*while\s*\(\s*1\s*\)\s*;\s*/, '');
+  return JSON.parse(cleanText);
+}
+
+async function runWithConcurrency(items, concurrency, worker) {
+  let nextIndex = 0;
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex++];
+      try {
+        await worker(item);
+      } catch (err) {
+        console.debug('[SCH PDF Easy] 자동 다운로드 항목 실패:', item && item.title, err.message);
+      }
+    }
+  }));
+}
+
+async function autoDownloadSingle(pdf) {
+  const downloadUrl = await resolveDownloadUrl(pdf);
+  const safeTitle = Shared.sanitizeFilename(pdf.title, 'download');
+  const filename = `${safeTitle}.${pdf.ext || 'pdf'}`;
+  const downloadId = await chrome.downloads.download({
+    url: downloadUrl,
+    filename: `SCH_PDF/${filename}`,
+    conflictAction: 'uniquify',
+  });
+
+  await rememberPendingDownload(downloadId, {
+    contentId: pdf.contentId,
+    title: pdf.title,
+    tabId: null,
+  });
 }
 
 

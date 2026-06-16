@@ -152,6 +152,29 @@
     }
   }
 
+  function getAvailabilityStatus(pdf) {
+    if (Shared.getAvailabilityStatus) {
+      return Shared.getAvailabilityStatus(pdf && pdf.availability);
+    }
+    return { state: 'available', label: '접근 가능', downloadable: true, urgency: 0 };
+  }
+
+  function isDownloadableNow(pdf) {
+    return getAvailabilityStatus(pdf).downloadable !== false;
+  }
+
+  function getDownloadablePdfs(pdfs) {
+    return (Array.isArray(pdfs) ? pdfs : []).filter(isDownloadableNow);
+  }
+
+  async function parseProtectedJsonResponse(response) {
+    const text = await response.text();
+    const cleanText = Shared.stripJsonProtectionPrefix
+      ? Shared.stripJsonProtectionPrefix(text)
+      : String(text || '').replace(/^\s*while\s*\(\s*1\s*\)\s*;\s*/, '');
+    return JSON.parse(cleanText);
+  }
+
   // ──────────────────────────────────────────────
   // 3. injector.js와 CustomEvent 통신 (강의콘텐츠)
   // ──────────────────────────────────────────────
@@ -233,7 +256,7 @@
         const res = await fetch(nextUrl, { credentials: 'include' });
         if (!res.ok) break;
 
-        const files = await res.json();
+        const files = await parseProtectedJsonResponse(res);
         if (!Array.isArray(files)) break;
         allFiles.push(...files);
 
@@ -255,6 +278,7 @@
             type: 'canvas_file',
             ext,
             directUrl: f.url,
+            availability: Shared.normalizeAvailability ? Shared.normalizeAvailability(f) : null,
           };
         });
     } catch (e) {
@@ -391,21 +415,24 @@
 
     downloadedFiles = await getDownloadedFilesSafe();
 
-    const newCount = currentPDFs.filter((p) => !downloadedFiles[p.contentId]).length;
+    const downloadablePDFs = getDownloadablePdfs(currentPDFs);
+    const skippedCount = currentPDFs.length - downloadablePDFs.length;
+    const newCount = downloadablePDFs.filter((p) => !downloadedFiles[p.contentId]).length;
     const sourceLabel = canvasFiles.length > 0 && !finalRedux.success ? ' (강의자료실)' : '';
     const warningLabel = finalRedux.warning ? ` / ${finalRedux.warning}` : '';
-    setStatus(`PDF ${currentPDFs.length}개${sourceLabel} (새 파일: ${newCount}개)${warningLabel}`, 'ok');
+    const policyLabel = skippedCount > 0 ? `, 접근 불가 제외: ${skippedCount}개` : '';
+    setStatus(`PDF ${currentPDFs.length}개${sourceLabel} (새 파일: ${newCount}개${policyLabel})${warningLabel}`, 'ok');
 
     renderPDFList();
 
-    dlAllBtn.disabled = false;
+    dlAllBtn.disabled = downloadablePDFs.length === 0;
     if (newCount === 0) {
       dlBtn.innerHTML = `${I.check} 완료`;
       dlBtn.disabled = true;
     } else {
       dlBtn.innerHTML = `${I.download} 새 파일 (${newCount})`;
       dlBtn.disabled = false;
-      warmDownloadUrlCache(currentPDFs.filter((p) => !downloadedFiles[p.contentId]));
+      warmDownloadUrlCache(downloadablePDFs.filter((p) => !downloadedFiles[p.contentId]));
     }
   }
 
@@ -415,15 +442,20 @@
 
     currentPDFs.forEach((pdf) => {
       const isDownloaded = !!downloadedFiles[pdf.contentId];
+      const availability = getAvailabilityStatus(pdf);
+      const isDownloadable = availability.downloadable !== false;
+      const availabilityBadge = availability.state !== 'available'
+        ? `<span class="spe-availability-badge spe-availability-${escapeHtml(availability.state)}">${escapeHtml(availability.label)}</span>`
+        : '';
       const item = document.createElement('div');
-      item.className = `spe-pdf-item ${isDownloaded ? 'spe-downloaded' : 'spe-new'}`;
+      item.className = `spe-pdf-item ${isDownloaded ? 'spe-downloaded' : 'spe-new'} ${isDownloadable ? '' : 'spe-unavailable'}`;
       item.innerHTML = `
         <span class="spe-pdf-status-icon ${isDownloaded ? 'done' : 'new'}">${isDownloaded ? I.check : I.file}</span>
         <div class="spe-pdf-item-info">
           <div class="spe-pdf-item-title">${escapeHtml(pdf.title)}</div>
-          <div class="spe-pdf-item-meta">${escapeHtml(pdf.section)}${pdf.subsection ? ' · ' + escapeHtml(pdf.subsection) : ''}</div>
+          <div class="spe-pdf-item-meta">${escapeHtml(pdf.section)}${pdf.subsection ? ' · ' + escapeHtml(pdf.subsection) : ''}${availabilityBadge}</div>
         </div>
-        <button class="spe-pdf-item-dl spe-icon-btn" title="개별 다운로드">${I.dlSmall}</button>
+        <button class="spe-pdf-item-dl spe-icon-btn" title="${isDownloadable ? '개별 다운로드' : '접근 가능한 자료만 다운로드할 수 있습니다'}"${isDownloadable ? '' : ' disabled'}>${I.dlSmall}</button>
       `;
       // contentId는 innerHTML 보간 대신 안전하게 속성으로 직접 설정
       item.querySelector('.spe-pdf-item-dl').dataset.contentId = pdf.contentId;
@@ -431,6 +463,10 @@
 
       item.querySelector('.spe-pdf-item-dl').addEventListener('click', async (e) => {
         const btn = e.currentTarget;
+        if (!isDownloadableNow(pdf)) {
+          setStatus('기간 종료/접근 제한 자료는 다운로드하지 않습니다.', 'warn');
+          return;
+        }
         btn.disabled = true;
         btn.innerHTML = I.spinner;
         try {
@@ -459,7 +495,7 @@
       if (icon) { icon.className = 'spe-pdf-status-icon done'; icon.innerHTML = I.check; }
     }
     // 버튼 카운트 업데이트
-    const remaining = currentPDFs.filter((p) => !downloadedFiles[p.contentId]).length;
+    const remaining = getDownloadablePdfs(currentPDFs).filter((p) => !downloadedFiles[p.contentId]).length;
     const dlBtn = document.getElementById('spe-download-btn');
     if (dlBtn) {
       if (remaining === 0) { dlBtn.innerHTML = `${I.check} 완료`; dlBtn.disabled = true; }
@@ -472,6 +508,9 @@
   // ──────────────────────────────────────────────
 
   async function startDownloadSingle(pdf) {
+    if (!isDownloadableNow(pdf)) {
+      throw new Error('접근 가능한 자료만 다운로드할 수 있습니다.');
+    }
     const downloadUrl = await getDownloadUrl(pdf);
     const safeTitle = Shared.sanitizeFilename ? Shared.sanitizeFilename(pdf.title, 'download') : sanitizeFilename(pdf.title);
     const filename = `${safeTitle}.${pdf.ext || 'pdf'}`;
@@ -567,7 +606,7 @@
     if (isRunning) return;
     isRunning = true;
     try {
-      await downloadBatch(currentPDFs.filter((p) => !downloadedFiles[p.contentId]));
+      await downloadBatch(getDownloadablePdfs(currentPDFs).filter((p) => !downloadedFiles[p.contentId]));
     } finally {
       isRunning = false;
     }
@@ -577,7 +616,7 @@
     if (isRunning) return;
     isRunning = true;
     try {
-      await downloadBatch(currentPDFs);
+      await downloadBatch(getDownloadablePdfs(currentPDFs));
     } finally {
       isRunning = false;
     }
@@ -590,7 +629,10 @@
     const dlBtn = document.getElementById('spe-download-btn');
     const dlAllBtn = document.getElementById('spe-download-all-btn');
 
-    if (pdfs.length === 0) return;
+    if (pdfs.length === 0) {
+      setStatus('접근 가능한 다운로드 대상이 없습니다.', 'warn');
+      return;
+    }
 
     dlBtn.disabled = true;
     dlAllBtn.disabled = true;
@@ -664,7 +706,7 @@
 
     await batchDone;
 
-    const remaining = currentPDFs.filter((p) => !downloadedFiles[p.contentId]).length;
+    const remaining = getDownloadablePdfs(currentPDFs).filter((p) => !downloadedFiles[p.contentId]).length;
     if (remaining === 0) {
       dlBtn.innerHTML = `${I.check} 완료`;
       dlBtn.disabled = true;
@@ -672,7 +714,7 @@
       dlBtn.innerHTML = `${I.download} 새 파일 (${remaining})`;
       dlBtn.disabled = false;
     }
-    dlAllBtn.disabled = false;
+    dlAllBtn.disabled = getDownloadablePdfs(currentPDFs).length === 0;
 
     _progressTimer = setTimeout(() => { progressContainer.style.display = 'none'; }, 3000);
   }
@@ -744,7 +786,7 @@
         lines.push(`  HTTP 상태: ${r.status}`);
         if (r.ok) {
           try {
-            const parsed = await r.json();
+            const parsed = await parseProtectedJsonResponse(r);
             const arr = Array.isArray(parsed) ? parsed : null;
             if (arr) {
               lines.push(`  결과: ${arr.length}개`);
@@ -773,8 +815,10 @@
       lines.push(`스캔된 파일: ${currentPDFs.length}개`);
       lines.push('');
       currentPDFs.forEach((pdf, i) => {
+        const availability = getAvailabilityStatus(pdf);
         lines.push(`[파일 ${i}] ${pdf.title}`);
         lines.push(`  type: ${pdf.type}, ext: ${pdf.ext}`);
+        lines.push(`  availability: ${availability.state} (${availability.label}), downloadable=${availability.downloadable}`);
         lines.push(`  contentId: ${redactId(pdf.contentId)}`);
         if (pdf.lxContentId) lines.push(`  lxContentId: ${redactId(pdf.lxContentId)}`);
         if (pdf.directUrl) lines.push(`  directUrl: ${redactUrl(pdf.directUrl)}`);

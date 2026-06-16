@@ -3,10 +3,13 @@ const assert = require('node:assert/strict');
 
 const {
   buildLxResourceEntry,
+  filterCurrentStudentCourses,
+  getAvailabilityStatus,
   getNextLinkFromHeader,
   isAllowedDownloadUrl,
   isDownloadResponseSuccess,
   mergeUniqueByContentId,
+  normalizeAvailability,
   normalizeDownloadCandidate,
   normalizeDownloadConcurrency,
   redactIdentifier,
@@ -14,6 +17,7 @@ const {
   resolveAllowedDownloadUrl,
   sanitizeFilename,
   shouldRefreshLxCache,
+  stripJsonProtectionPrefix,
 } = require('../shared.js');
 
 const {
@@ -124,6 +128,70 @@ test('normalizeDownloadCandidate rejects invalid scan results', () => {
   );
 });
 
+test('normalizeAvailability maps LMS availability metadata', () => {
+  assert.deepEqual(
+    normalizeAvailability({
+      unlock_at: '2026-06-16T01:00:00+09:00',
+      lock_at: '2026-06-20T23:59:00+09:00',
+      locked_for_user: 'false',
+      hidden: 0,
+    }),
+    {
+      unlockAt: '2026-06-15T16:00:00.000Z',
+      lockAt: '2026-06-20T14:59:00.000Z',
+      locked: false,
+      hidden: false,
+    }
+  );
+  assert.equal(normalizeAvailability({ title: 'no availability' }), null);
+});
+
+test('getAvailabilityStatus only marks currently accessible resources downloadable', () => {
+  const now = Date.parse('2026-06-16T00:00:00.000Z');
+
+  assert.deepEqual(
+    getAvailabilityStatus({ lockAt: '2026-06-16T06:00:00.000Z' }, now),
+    { state: 'ending-soon', label: '6시간 남음', downloadable: true, urgency: 3 }
+  );
+  assert.equal(
+    getAvailabilityStatus({ lockAt: '2026-06-15T23:59:59.000Z' }, now).downloadable,
+    false
+  );
+  assert.equal(
+    getAvailabilityStatus({ unlockAt: '2026-06-17T00:00:00.000Z' }, now).state,
+    'upcoming'
+  );
+  assert.equal(
+    getAvailabilityStatus({ locked: true }, now).state,
+    'restricted'
+  );
+});
+
+test('normalizeDownloadCandidate preserves valid availability policy metadata', () => {
+  assert.deepEqual(
+    normalizeDownloadCandidate({
+      title: 'x',
+      contentId: '1',
+      ext: 'pdf',
+      lock_at: '2026-06-20T00:00:00.000Z',
+    }),
+    {
+      title: 'x',
+      contentId: '1',
+      section: '',
+      subsection: '',
+      type: 'commons',
+      ext: 'pdf',
+      availability: {
+        unlockAt: null,
+        lockAt: '2026-06-20T00:00:00.000Z',
+        locked: false,
+        hidden: false,
+      },
+    }
+  );
+});
+
 test('diagnostic redaction masks identifiers and URL query strings', () => {
   assert.equal(redactIdentifier('abcdef1234567890'), 'abcdef…redacted');
   assert.equal(redactIdentifier('short'), '[redacted]');
@@ -157,4 +225,42 @@ test('normalizeDownloadConcurrency clamps invalid and excessive values', () => {
   assert.equal(normalizeDownloadConcurrency('3', 5, 8), 3);
   assert.equal(normalizeDownloadConcurrency(10, 5, 8), 8);
   assert.equal(normalizeDownloadConcurrency(4.7, 5, 8), 4);
+});
+
+test('stripJsonProtectionPrefix removes Canvas XSSI guards', () => {
+  assert.equal(stripJsonProtectionPrefix('while(1);[{"id":1}]'), '[{"id":1}]');
+  assert.equal(stripJsonProtectionPrefix('for(;;);{"ok":true}'), '{"ok":true}');
+});
+
+test('filterCurrentStudentCourses prefers active on-campus student courses', () => {
+  const now = Date.parse('2026-06-16T00:00:00.000Z');
+  const courses = [
+    {
+      id: 50105,
+      name: '2026학년도 맛있는SW시리즈',
+      workflow_state: 'available',
+      end_at: '2026-06-26T14:59:00Z',
+      enrollments: [{ type: 'student', role: 'StudentEnrollment', enrollment_state: 'active' }],
+    },
+    {
+      id: 49561,
+      name: '알고리즘(13563)',
+      workflow_state: 'available',
+      course_format: 'on_campus',
+      enrollments: [{ type: 'student', role: 'StudentEnrollment', enrollment_state: 'active' }],
+    },
+    {
+      id: 49000,
+      name: '지난 강의',
+      workflow_state: 'available',
+      course_format: 'on_campus',
+      end_at: '2026-01-01T00:00:00Z',
+      enrollments: [{ type: 'student', role: 'StudentEnrollment', enrollment_state: 'active' }],
+    },
+  ];
+
+  assert.deepEqual(
+    filterCurrentStudentCourses(courses, now).map((course) => course.id),
+    [49561]
+  );
 });

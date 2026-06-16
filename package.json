@@ -2,7 +2,7 @@
   "name": "sch-pdf-easy",
   "private": true,
   "scripts": {
-    "lint:syntax": "node --check background.js && node --check content.js && node --check injector.js && node --check shared.js && node --check download_utils.js",
+    "lint:syntax": "node --check background.js && node --check content.js && node --check injector.js && node --check shared.js && node --check download_utils.js && node --check auto_sync.js",
     "test": "node --test"
   }
 }
