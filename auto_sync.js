@@ -9,28 +9,29 @@
 (function () {
   'use strict';
 
-  function isLikelyLoggedIn() {
+  function isLoginPage() {
     if (!location.hostname.endsWith('medlms.sch.ac.kr')) return false;
-    if (document.querySelector('form[action*="login"], input[type="password"]')) return false;
-    return !!(
-      document.cookie ||
-      document.querySelector('a[href*="/logout"], a[href*="logout"]') ||
-      document.querySelector('[href*="/courses/"]') ||
-      location.pathname.includes('/courses')
-    );
+    if (/\/login\b/i.test(location.pathname)) return true;
+    return !!document.querySelector('form[action*="login"], input[type="password"]');
   }
 
   function requestAutoDownload() {
-    if (!isLikelyLoggedIn()) return;
-    chrome.runtime.sendMessage({ action: 'maybeStartAutoDownload' }, () => {
-      // background가 cooldown/설정/진행 중 여부를 판단하므로 응답은 로깅하지 않는다.
+    if (!location.hostname.endsWith('medlms.sch.ac.kr') || isLoginPage()) return;
+    chrome.runtime.sendMessage({ action: 'maybeStartAutoDownload' }, (response) => {
+      if (response) console.debug('[SCH PDF Easy] 로그인 자동 백업 요청:', response);
       void chrome.runtime.lastError;
     });
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', requestAutoDownload, { once: true });
-  } else {
+  function scheduleAutoDownloadRequests() {
     requestAutoDownload();
+    setTimeout(requestAutoDownload, 2000);
+    setTimeout(requestAutoDownload, 8000);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', scheduleAutoDownloadRequests, { once: true });
+  } else {
+    scheduleAutoDownloadRequests();
   }
 })();

@@ -147,6 +147,7 @@ async function maybeStartAutoDownload() {
   const settings = await chrome.storage.local.get({
     autoDownloadOnLogin: true,
     autoDownloadLastStartedAt: 0,
+    autoDownloadLastNoCourseAt: 0,
     downloadConcurrency: AUTO_DOWNLOAD_DEFAULT_CONCURRENCY,
   });
 
@@ -162,8 +163,10 @@ async function maybeStartAutoDownload() {
   if (now - Number(settings.autoDownloadLastStartedAt || 0) < AUTO_DOWNLOAD_COOLDOWN_MS) {
     return { success: true, skipped: true, reason: 'cooldown' };
   }
+  if (now - Number(settings.autoDownloadLastNoCourseAt || 0) < 30000) {
+    return { success: true, skipped: true, reason: 'no course retry cooldown' };
+  }
 
-  await chrome.storage.local.set({ autoDownloadLastStartedAt: now });
   const concurrency = Shared.normalizeDownloadConcurrency(
     settings.downloadConcurrency,
     AUTO_DOWNLOAD_DEFAULT_CONCURRENCY,
@@ -187,6 +190,22 @@ async function runAutoDownloadAllCourses(concurrency) {
   const courses = await fetchCourses();
   const candidates = [];
 
+  if (courses.length === 0) {
+    await chrome.storage.local.set({
+      autoDownloadLastNoCourseAt: Date.now(),
+      autoDownloadLastSummary: {
+        checkedAt: new Date().toISOString(),
+        state: 'no-current-courses',
+        courseCount: 0,
+        candidateCount: 0,
+        downloadCount: 0,
+      },
+    });
+    return { success: true, courseCount: 0, downloadCount: 0 };
+  }
+
+  await chrome.storage.local.set({ autoDownloadLastStartedAt: Date.now() });
+
   for (const course of courses.slice(0, AUTO_DOWNLOAD_COURSE_LIMIT)) {
     try {
       const [canvasFiles, lxResources] = await Promise.all([
@@ -209,6 +228,7 @@ async function runAutoDownloadAllCourses(concurrency) {
   await chrome.storage.local.set({
     autoDownloadLastSummary: {
       checkedAt: new Date().toISOString(),
+      state: 'completed',
       courseCount: courses.length,
       candidateCount: candidates.length,
       downloadCount: unique.length,
@@ -232,7 +252,8 @@ async function fetchCourses() {
   }
   const filterCourses = Shared.filterCurrentStudentCourses ||
     ((courses) => courses.filter((course) => course && course.id));
-  if (favorites.length > 0) return filterCourses(favorites);
+  const filteredFavorites = filterCourses(favorites);
+  if (filteredFavorites.length > 0) return filteredFavorites;
 
   const active = await fetchPaginatedJson('/api/v1/courses?enrollment_state=active&per_page=100');
   return filterCourses(active);
