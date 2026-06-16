@@ -1,10 +1,11 @@
 # SCH PDF Easy Downloader
 
-[![Chrome Extension](https://img.shields.io/badge/Chrome%20Extension-MV3-4285F4)](./manifest.json)
+[![Chrome Extension](https://img.shields.io/badge/Chrome%20Extension-MV3-4285F4)](https://developer.chrome.com/docs/extensions/develop/migrate/what-is-mv3)
 [![Release](https://img.shields.io/github/v/release/fox5t4r/sch-pdf-easy?label=release)](https://github.com/fox5t4r/sch-pdf-easy/releases)
 [![CI](https://github.com/fox5t4r/sch-pdf-easy/actions/workflows/ci.yml/badge.svg)](https://github.com/fox5t4r/sch-pdf-easy/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE)
 [![Issues](https://img.shields.io/github/issues/fox5t4r/sch-pdf-easy)](https://github.com/fox5t4r/sch-pdf-easy/issues)
+
 
 순천향대학교 LMS에서 강의자료를 과목별로 하나씩 내려받아야 하는 불편을 줄이기 위해 만든 Chrome 확장 프로그램입니다.
 
