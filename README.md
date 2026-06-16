@@ -10,7 +10,7 @@
 강의콘텐츠와 강의자료실을 자동 스캔하여 PDF, PPT, PPTX 파일을 탐지하고, 새 파일만 골라 원클릭으로 최대 5개까지 병렬 다운로드합니다.
 
 ![Screenshot](./screenshot.png)
-
+![`docs/demo.gif`](./docs/demo.gif) 
 ---
 
 ## 30초 소개
@@ -27,14 +27,13 @@
 
 | 항목            | 링크                                                                    |
 | ------------- | --------------------------------------------------------------------- |
-| Demo GIF      | `docs/demo.gif`                                                       |
+| Demo GIF      | [`docs/demo.gif`](./docs/demo.gif)                                    |
 | Screenshot    | [`screenshot.png`](./screenshot.png)                                  |
 | 실행 파일         | [GitHub Releases](https://github.com/fox5t4r/sch-pdf-easy/releases)   |
 | Source Code   | [GitHub Repository](https://github.com/fox5t4r/sch-pdf-easy)          |
 | Issues        | [GitHub Issues](https://github.com/fox5t4r/sch-pdf-easy/issues)       |
 | Pull Requests | [GitHub Pull Requests](https://github.com/fox5t4r/sch-pdf-easy/pulls) |
 
-> Demo GIF는 단순 장식이 아니라, 실제로 LMS 페이지에서 파일 탐지 → 새 파일 구분 → 다운로드가 동작한다는 것을 보여주는 실행 증거로 관리합니다.
 
 ---
 
