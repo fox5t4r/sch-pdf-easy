@@ -146,7 +146,7 @@ test('normalizeAvailability maps LMS availability metadata', () => {
   assert.equal(normalizeAvailability({ title: 'no availability' }), null);
 });
 
-test('getAvailabilityStatus only marks currently accessible resources downloadable', () => {
+test('getAvailabilityStatus treats period metadata as advisory unless server hides it', () => {
   const now = Date.parse('2026-06-16T00:00:00.000Z');
 
   assert.deepEqual(
@@ -155,15 +155,19 @@ test('getAvailabilityStatus only marks currently accessible resources downloadab
   );
   assert.equal(
     getAvailabilityStatus({ lockAt: '2026-06-15T23:59:59.000Z' }, now).downloadable,
-    false
+    true
   );
   assert.equal(
-    getAvailabilityStatus({ unlockAt: '2026-06-17T00:00:00.000Z' }, now).state,
-    'upcoming'
+    getAvailabilityStatus({ unlockAt: '2026-06-17T00:00:00.000Z' }, now).downloadable,
+    true
   );
   assert.equal(
-    getAvailabilityStatus({ locked: true }, now).state,
-    'restricted'
+    getAvailabilityStatus({ locked: true }, now).downloadable,
+    true
+  );
+  assert.deepEqual(
+    getAvailabilityStatus({ hidden: true }, now),
+    { state: 'hidden', label: '서버 숨김', downloadable: false, urgency: 0 }
   );
 });
 

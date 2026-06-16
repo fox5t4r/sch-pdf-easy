@@ -291,6 +291,7 @@
 
 .spe-availability-upcoming,
 .spe-availability-expired,
+.spe-availability-hidden,
 .spe-availability-restricted {
   border-color: #ff8182;
   color: #cf222e;
