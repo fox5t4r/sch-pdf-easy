@@ -10,7 +10,10 @@
 강의콘텐츠와 강의자료실을 자동 스캔하여 PDF, PPT, PPTX 파일을 탐지하고, 새 파일만 골라 원클릭으로 최대 5개까지 병렬 다운로드합니다.
 
 ![Screenshot](./screenshot.png)
-![`docs/demo.gif`](./docs/demo.gif) 
+<p>
+  <img src="./docs/demo.gif" width="400" alt="SCH PDF Easy Downloader Demo">
+</p>
+
 ---
 
 ## 30초 소개
@@ -121,6 +124,10 @@ sch-pdf-easy/
 ---
 
 ## 설치 및 실행
+
+### 필요 환경
+* Chrome
+* 순천향대학교 LMS 계정
 
 ### 1. Releases에서 설치
 
