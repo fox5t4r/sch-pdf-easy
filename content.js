@@ -24,13 +24,22 @@
   'use strict';
 
   const VERSION = '1.6.9';
-  const DL_CONCURRENCY = 5;
+  const DEFAULT_DL_CONCURRENCY = 5;
+  const MAX_DL_CONCURRENCY = 8;
+  const URL_PREFETCH_CONCURRENCY = 3;
+  const URL_CACHE_TTL_MS = 10 * 60 * 1000;
+  const DOWNLOAD_STATUS_TIMEOUT_MS = 5 * 60 * 1000 + 10000;
   const Shared = globalThis.SpeShared || {};
 
   let isRunning = false;
   let currentPDFs = [];
   let downloadedFiles = {};
   let _progressTimer = null;
+  let _urlPrefetchRunId = 0;
+  const _downloadUrlCache = new Map();
+  const _downloadUrlInflight = new Map();
+  const _pendingDownloadItems = new Map();
+  let _activeBatch = null;
 
   // ──────────────────────────────────────────────
   // SVG Icons (GitHub Octicons style)
@@ -106,6 +115,7 @@
     document.getElementById('spe-download-all-btn').addEventListener('click', () => downloadAll());
     document.getElementById('spe-clear-history-btn').addEventListener('click', clearHistory);
     document.getElementById('spe-diag-btn').addEventListener('click', copyDiagnostics);
+    chrome.runtime.onMessage.addListener(handleRuntimeMessage);
   }
 
   // ──────────────────────────────────────────────
@@ -256,17 +266,75 @@
   // 5. 다운로드 URL 획득
   // ──────────────────────────────────────────────
 
+  function getDownloadCacheKey(pdf) {
+    return [pdf.type || 'commons', pdf.contentId, pdf.lxContentId || '', pdf.ext || 'pdf', pdf.directUrl || ''].join('|');
+  }
+
+  function getCachedDownloadUrl(pdf) {
+    const key = getDownloadCacheKey(pdf);
+    const cached = _downloadUrlCache.get(key);
+    if (!cached) return null;
+    if (Date.now() - cached.cachedAt > URL_CACHE_TTL_MS) {
+      _downloadUrlCache.delete(key);
+      return null;
+    }
+    return cached.url;
+  }
+
+  function setCachedDownloadUrl(pdf, url) {
+    _downloadUrlCache.set(getDownloadCacheKey(pdf), { url, cachedAt: Date.now() });
+  }
+
   async function getDownloadUrl(pdf) {
-    const response = await sendRuntimeMessage({
+    const cachedUrl = getCachedDownloadUrl(pdf);
+    if (cachedUrl) return cachedUrl;
+
+    const key = getDownloadCacheKey(pdf);
+    if (_downloadUrlInflight.has(key)) return _downloadUrlInflight.get(key);
+
+    const request = sendRuntimeMessage({
       action: 'resolveDownloadUrl',
       pdf,
+    }).then((response) => {
+      if (!(Shared.isDownloadResponseSuccess ? Shared.isDownloadResponseSuccess(response) : response && response.success)) {
+        throw new Error((response && response.error) || '다운로드 URL 조회 실패');
+      }
+      setCachedDownloadUrl(pdf, response.url);
+      return response.url;
+    }).finally(() => {
+      _downloadUrlInflight.delete(key);
     });
 
-    if (!(Shared.isDownloadResponseSuccess ? Shared.isDownloadResponseSuccess(response) : response && response.success)) {
-      throw new Error((response && response.error) || '다운로드 URL 조회 실패');
+    _downloadUrlInflight.set(key, request);
+    return request;
+  }
+
+  function warmDownloadUrlCache(pdfs) {
+    const runId = ++_urlPrefetchRunId;
+    const targets = pdfs.filter((pdf) => !getCachedDownloadUrl(pdf));
+    if (targets.length === 0) return;
+
+    let nextIndex = 0;
+    let resolved = 0;
+    const workerCount = Math.min(URL_PREFETCH_CONCURRENCY, targets.length);
+
+    async function worker() {
+      while (runId === _urlPrefetchRunId && nextIndex < targets.length) {
+        const pdf = targets[nextIndex++];
+        try {
+          await getDownloadUrl(pdf);
+          resolved++;
+        } catch (err) {
+          console.debug('[SCH PDF Easy] URL 사전 조회 실패:', pdf.title, err.message);
+        }
+      }
     }
 
-    return response.url;
+    Promise.all(Array.from({ length: workerCount }, worker)).then(() => {
+      if (runId === _urlPrefetchRunId && resolved > 0) {
+        console.debug(`[SCH PDF Easy] 다운로드 URL ${resolved}/${targets.length}개 사전 조회 완료`);
+      }
+    });
   }
 
   // ──────────────────────────────────────────────
@@ -337,6 +405,7 @@
     } else {
       dlBtn.innerHTML = `${I.download} 새 파일 (${newCount})`;
       dlBtn.disabled = false;
+      warmDownloadUrlCache(currentPDFs.filter((p) => !downloadedFiles[p.contentId]));
     }
   }
 
@@ -365,11 +434,10 @@
         btn.disabled = true;
         btn.innerHTML = I.spinner;
         try {
-          const succeeded = await downloadSingle(pdf);
-          if (succeeded) {
-            markItemDone(btn, pdf.contentId);
-            return;
-          }
+          const response = await startDownloadSingle(pdf);
+          _pendingDownloadItems.set(pdf.contentId, { pdf, btn, downloadId: response.downloadId });
+          setStatus(`다운로드 시작됨: ${pdf.title}`, 'ok');
+          return;
         } catch (err) {
           console.error(`[SCH PDF Easy] 다운로드 실패: ${pdf.title}`, err);
           setStatus(`다운로드 실패: ${pdf.title}`, 'error');
@@ -403,13 +471,13 @@
   // 7. 다운로드 (단일 / 병렬 배치)
   // ──────────────────────────────────────────────
 
-  async function downloadSingle(pdf) {
+  async function startDownloadSingle(pdf) {
     const downloadUrl = await getDownloadUrl(pdf);
     const safeTitle = Shared.sanitizeFilename ? Shared.sanitizeFilename(pdf.title, 'download') : sanitizeFilename(pdf.title);
     const filename = `${safeTitle}.${pdf.ext || 'pdf'}`;
 
     const response = await sendRuntimeMessage({
-      action: 'downloadPDF',
+      action: 'startDownloadPDF',
       url: downloadUrl,
       filename,
       contentId: pdf.contentId,
@@ -417,11 +485,82 @@
     });
 
     if (!(Shared.isDownloadResponseSuccess ? Shared.isDownloadResponseSuccess(response) : response && response.success)) {
-      throw new Error((response && response.error) || '다운로드 요청 실패');
+      throw new Error((response && response.error) || '다운로드 시작 실패');
     }
 
-    downloadedFiles[pdf.contentId] = { title: pdf.title, downloadedAt: new Date().toISOString() };
-    return true;
+    return response;
+  }
+
+  async function getDownloadConcurrencySafe() {
+    try {
+      const response = await sendRuntimeMessage({ action: 'getSettings' });
+      const raw = response && response.downloadConcurrency;
+      if (Shared.normalizeDownloadConcurrency) {
+        return Shared.normalizeDownloadConcurrency(raw, DEFAULT_DL_CONCURRENCY, MAX_DL_CONCURRENCY);
+      }
+      const value = Number.isFinite(raw) ? raw : Number(raw);
+      if (value >= 1) return Math.min(MAX_DL_CONCURRENCY, Math.floor(value));
+    } catch (err) {
+      console.debug('[SCH PDF Easy] 설정 조회 실패, 기본 동시성 사용:', err.message);
+    }
+    return DEFAULT_DL_CONCURRENCY;
+  }
+
+  function handleRuntimeMessage(message) {
+    if (!message || message.action !== 'downloadStatusChanged') return;
+
+    const pending = _pendingDownloadItems.get(message.contentId);
+    const btn = pending && pending.btn
+      ? pending.btn
+      : document.querySelector(`[data-content-id="${CSS.escape(message.contentId)}"]`);
+
+    if (message.status === 'complete') {
+      downloadedFiles[message.contentId] = {
+        title: message.title || (pending && pending.pdf && pending.pdf.title) || '',
+        downloadedAt: new Date().toISOString(),
+      };
+      if (btn) markItemDone(btn, message.contentId);
+      _pendingDownloadItems.delete(message.contentId);
+      updateActiveBatch('complete', message.contentId);
+      return;
+    }
+
+    if (message.status === 'interrupted' || message.status === 'cancelled') {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = I.dlSmall;
+      }
+      _pendingDownloadItems.delete(message.contentId);
+      updateActiveBatch('failed', message.contentId);
+      setStatus(`다운로드 실패: ${message.title || message.contentId}`, 'warn');
+    }
+  }
+
+  function updateActiveBatch(result, contentId) {
+    if (!_activeBatch) return;
+    if (contentId && !_activeBatch.contentIds.has(contentId)) return;
+    _activeBatch.completed++;
+    if (result === 'failed') _activeBatch.failed++;
+
+    const progressFill = document.getElementById('spe-progress-fill');
+    const progressText = document.getElementById('spe-progress-text');
+    if (progressFill) progressFill.style.width = `${Math.round((_activeBatch.completed / _activeBatch.total) * 100)}%`;
+    if (progressText) progressText.textContent = `${_activeBatch.completed}/${_activeBatch.total}`;
+
+    if (_activeBatch.completed >= _activeBatch.total) {
+      const totalMs = Math.round(performance.now() - _activeBatch.startedAt);
+      const firstStartText = _activeBatch.firstStartMs != null ? `, 첫 시작 ${_activeBatch.firstStartMs}ms` : '';
+      if (_activeBatch.failed > 0) {
+        setStatus(`${_activeBatch.total - _activeBatch.failed}개 다운로드 완료, ${_activeBatch.failed}개 실패 (${totalMs}ms${firstStartText})`, 'warn');
+      } else {
+        setStatus(`${_activeBatch.total}개 다운로드 완료 (${totalMs}ms${firstStartText})`, 'ok');
+      }
+      if (_activeBatch.timeoutId) clearTimeout(_activeBatch.timeoutId);
+      if (_activeBatch.resolve) _activeBatch.resolve();
+      _activeBatch = null;
+    } else {
+      setStatus(`다운로드 중... (${_activeBatch.completed}/${_activeBatch.total})`);
+    }
   }
 
   async function downloadNew() {
@@ -460,42 +599,70 @@
     progressFill.style.width = '0%';
     progressText.textContent = `0/${pdfs.length}`;
 
-    let completed = 0;
-    let failed = 0;
     const total = pdfs.length;
-    const queue = [...pdfs];
+    const concurrency = await getDownloadConcurrencySafe();
+    let nextIndex = 0;
+    let enqueueCompleted = 0;
+    let enqueueFailed = 0;
 
-    // 병렬 worker: queue에서 꺼내 순차 처리, 최대 DL_CONCURRENCY개 동시 실행
+    const batchDone = new Promise((resolve) => {
+      _activeBatch = {
+        total,
+        completed: 0,
+        failed: 0,
+        startedAt: performance.now(),
+        firstStartMs: null,
+        contentIds: new Set(pdfs.map((pdf) => pdf.contentId)),
+        resolve,
+        timeoutId: null,
+      };
+      _activeBatch.timeoutId = setTimeout(() => {
+        if (!_activeBatch) return;
+        const timedOut = _activeBatch.total - _activeBatch.completed;
+        _activeBatch.failed += timedOut;
+        _activeBatch.completed = _activeBatch.total;
+        setStatus(`${_activeBatch.total - _activeBatch.failed}개 다운로드 완료, ${_activeBatch.failed}개 실패/시간초과`, 'warn');
+        if (_activeBatch.resolve) _activeBatch.resolve();
+        _activeBatch = null;
+      }, DOWNLOAD_STATUS_TIMEOUT_MS);
+    });
+
+    // 병렬 starter: URL resolve는 cache를 우선 사용하고, 다운로드는 완료 대기 없이 즉시 시작한다.
     async function worker() {
-      while (queue.length > 0) {
-        const pdf = queue.shift();
+      while (nextIndex < total) {
+        const pdf = pdfs[nextIndex++];
 
         try {
-          const succeeded = await downloadSingle(pdf);
-          // CSS.escape: contentId에 ] 또는 " 포함 시 selector 파싱 오류 방지
+          const response = await startDownloadSingle(pdf);
+          if (_activeBatch && _activeBatch.firstStartMs == null) {
+            _activeBatch.firstStartMs = Math.round(performance.now() - _activeBatch.startedAt);
+          }
           const btn = document.querySelector(`[data-content-id="${CSS.escape(pdf.contentId)}"]`);
-          if (btn && succeeded) markItemDone(btn, pdf.contentId);
+          if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = I.spinner;
+          }
+          _pendingDownloadItems.set(pdf.contentId, { pdf, btn, downloadId: response.downloadId });
         } catch (err) {
-          failed++;
-          console.error(`[SCH PDF Easy] 실패: ${pdf.title}`, err);
+          enqueueFailed++;
+          console.error(`[SCH PDF Easy] 시작 실패: ${pdf.title}`, err);
+          updateActiveBatch('failed', pdf.contentId);
         }
 
-        completed++;
-        progressFill.style.width = `${Math.round((completed / total) * 100)}%`;
-        progressText.textContent = `${completed}/${total}`;
-        setStatus(`다운로드 중... (${completed}/${total})`);
+        enqueueCompleted++;
+        setStatus(`다운로드 시작 요청 중... (${enqueueCompleted}/${total})`);
       }
     }
 
     await Promise.all(
-      Array.from({ length: Math.min(DL_CONCURRENCY, total) }, worker)
+      Array.from({ length: Math.min(concurrency, total) }, worker)
     );
 
-    if (failed > 0) {
-      setStatus(`${completed - failed}개 다운로드 완료, ${failed}개 실패`, 'warn');
-    } else {
-      setStatus(`${completed}개 다운로드 완료`, 'ok');
+    if (_activeBatch && enqueueFailed < total) {
+      setStatus(`다운로드 시작됨 (${total - enqueueFailed}/${total}) · 완료 대기 중...`);
     }
+
+    await batchDone;
 
     const remaining = currentPDFs.filter((p) => !downloadedFiles[p.contentId]).length;
     if (remaining === 0) {

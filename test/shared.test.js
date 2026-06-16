@@ -8,6 +8,7 @@ const {
   isDownloadResponseSuccess,
   mergeUniqueByContentId,
   normalizeDownloadCandidate,
+  normalizeDownloadConcurrency,
   redactIdentifier,
   redactUrl,
   resolveAllowedDownloadUrl,
@@ -147,4 +148,13 @@ test('download utils parse XML and build extension-aware fallback URLs', () => {
     appendFileNameParam('https://commons.sch.ac.kr/download.php?a=1', '강의 1'),
     'https://commons.sch.ac.kr/download.php?a=1&file_name=%EA%B0%95%EC%9D%98%201'
   );
+});
+
+
+test('normalizeDownloadConcurrency clamps invalid and excessive values', () => {
+  assert.equal(normalizeDownloadConcurrency(undefined, 5, 8), 5);
+  assert.equal(normalizeDownloadConcurrency('0', 5, 8), 5);
+  assert.equal(normalizeDownloadConcurrency('3', 5, 8), 3);
+  assert.equal(normalizeDownloadConcurrency(10, 5, 8), 8);
+  assert.equal(normalizeDownloadConcurrency(4.7, 5, 8), 4);
 });

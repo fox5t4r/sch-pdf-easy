@@ -113,6 +113,14 @@
     return safe || (fallback || 'download');
   }
 
+  function normalizeDownloadConcurrency(value, fallback, max) {
+    const defaultValue = fallback || 5;
+    const maxValue = max || 8;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric < 1) return defaultValue;
+    return Math.min(maxValue, Math.floor(numeric));
+  }
+
   function normalizeDownloadCandidate(candidate) {
     if (!candidate || typeof candidate !== 'object') return null;
 
@@ -176,6 +184,7 @@
     isSupportedExt,
     mergeUniqueByContentId,
     normalizeDownloadCandidate,
+    normalizeDownloadConcurrency,
     redactIdentifier,
     redactUrl,
     resolveAllowedDownloadUrl,
