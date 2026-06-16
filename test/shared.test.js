@@ -211,7 +211,7 @@ test('download utils parse XML and build extension-aware fallback URLs', () => {
   assert.equal(extractXmlTag(xml, 'content_download_uri'), '/download.php?a=1&b=2');
   assert.equal(
     resolveCommonsDownloadUrlFromXml(xml, { contentId: 'cid', ext: 'pdf', type: 'commons' }),
-    'https://commons.sch.ac.kr/download.php?a=1&b=2'
+    buildFallbackCommonsDownloadUrl('cid', 'pdf')
   );
 
   assert.match(buildFallbackCommonsDownloadUrl('cid', 'pdf'), /original\.pdf/);
@@ -232,7 +232,7 @@ test('normalizeDownloadConcurrency clamps invalid and excessive values', () => {
   assert.equal(normalizeDownloadConcurrency(4.7, 5, 8), 4);
 });
 
-test('download utils returns ordered Commons URL candidates', () => {
+test('download utils fixes Commons downloads to the original-file endpoint', () => {
   const xml = [
     '<root>',
     '<content_download_uri>/download.php?a=1&amp;b=2</content_download_uri>',
@@ -244,10 +244,12 @@ test('download utils returns ordered Commons URL candidates', () => {
   assert.deepEqual(
     resolveCommonsDownloadUrlCandidatesFromXml(xml, { contentId: 'cid', ext: 'pdf', type: 'commons' }),
     [
-      'https://commons.sch.ac.kr/download.php?a=1&b=2',
-      'https://commons.sch.ac.kr/contents/x/source/original.pdf',
       buildFallbackCommonsDownloadUrl('cid', 'pdf'),
     ]
+  );
+  assert.equal(
+    resolveCommonsDownloadUrlFromXml(xml, { contentId: 'cid', ext: 'pdf', type: 'commons' }),
+    buildFallbackCommonsDownloadUrl('cid', 'pdf')
   );
 });
 

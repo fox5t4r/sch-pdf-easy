@@ -271,7 +271,7 @@ function handleRetryableDownloadTerminal(downloadId, state, pending) {
 
     const nextIndex = retry.index + 1;
     if (!retry.urls || nextIndex >= retry.urls.length) {
-      notifyDownloadStatus(downloadId, 'interrupted', state === 'complete' ? 'Empty download after all URL candidates' : `Download ${state}`, pending);
+      notifyDownloadStatus(downloadId, 'interrupted', state === 'complete' ? 'Fixed Commons download produced an empty file' : `Download ${state}`, pending);
       return;
     }
 
