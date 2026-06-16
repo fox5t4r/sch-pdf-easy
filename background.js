@@ -92,6 +92,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.action === 'autoDownloadCandidates') {
+    autoDownloadCandidates(message.pdfs)
+      .then((result) => sendResponse(result))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.action === 'getAutoDownloadState') {
+    chrome.storage.local.get({
+      autoDownloadOnLogin: true,
+      autoDownloadLastStartedAt: 0,
+      autoDownloadLastNoCourseAt: 0,
+      autoDownloadLastSummary: null,
+    }, (data) => {
+      sendResponse({
+        success: true,
+        running: !!_autoDownloadRun,
+        autoDownloadOnLogin: data.autoDownloadOnLogin !== false,
+        autoDownloadLastStartedAt: data.autoDownloadLastStartedAt || 0,
+        autoDownloadLastNoCourseAt: data.autoDownloadLastNoCourseAt || 0,
+        autoDownloadLastSummary: data.autoDownloadLastSummary || null,
+      });
+    });
+    return true;
+  }
+
   if (message.action === 'getDownloaded') {
     chrome.storage.local.get('downloadedFiles', (data) => {
       sendResponse(data.downloadedFiles || {});
@@ -237,6 +263,41 @@ async function runAutoDownloadAllCourses(concurrency) {
 
   await runWithConcurrency(unique, concurrency, autoDownloadSingle);
   return { success: true, courseCount: courses.length, downloadCount: unique.length };
+}
+
+async function autoDownloadCandidates(rawCandidates) {
+  const candidates = Array.isArray(rawCandidates) ? rawCandidates : [];
+  const downloadedFiles = await getDownloadedFiles();
+  const targets = Shared.mergeUniqueByContentId(candidates)
+    .map((candidate) => Shared.normalizeDownloadCandidate(candidate))
+    .filter((candidate) => {
+      if (!candidate || downloadedFiles[candidate.contentId]) return false;
+      return Shared.getAvailabilityStatus(candidate.availability).downloadable !== false;
+    });
+
+  if (targets.length === 0) {
+    return { success: true, started: false, downloadCount: 0 };
+  }
+
+  const settings = await chrome.storage.local.get({ downloadConcurrency: AUTO_DOWNLOAD_DEFAULT_CONCURRENCY });
+  const concurrency = Shared.normalizeDownloadConcurrency(
+    settings.downloadConcurrency,
+    AUTO_DOWNLOAD_DEFAULT_CONCURRENCY,
+    3
+  );
+
+  await chrome.storage.local.set({
+    autoDownloadLastSummary: {
+      checkedAt: new Date().toISOString(),
+      state: 'current-page-candidates',
+      courseCount: null,
+      candidateCount: candidates.length,
+      downloadCount: targets.length,
+    },
+  });
+
+  await runWithConcurrency(targets, concurrency, autoDownloadSingle);
+  return { success: true, started: true, downloadCount: targets.length };
 }
 
 function getDownloadedFiles() {

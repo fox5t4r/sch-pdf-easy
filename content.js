@@ -167,6 +167,25 @@
     return (Array.isArray(pdfs) ? pdfs : []).filter(isDownloadableNow);
   }
 
+  async function maybeAutoDownloadScannedPdfs(pdfs) {
+    const downloadable = getDownloadablePdfs(pdfs).filter((p) => !downloadedFiles[p.contentId]);
+    if (downloadable.length === 0) return;
+
+    try {
+      const settings = await sendRuntimeMessage({ action: 'getSettings' });
+      if (settings && settings.autoDownloadOnLogin === false) return;
+      const result = await sendRuntimeMessage({
+        action: 'autoDownloadCandidates',
+        pdfs: downloadable,
+      });
+      if (result && result.started) {
+        setStatus(`자동 다운로드 시작됨: ${result.downloadCount}개`, 'ok');
+      }
+    } catch (err) {
+      console.debug('[SCH PDF Easy] 현재 페이지 자동 다운로드 요청 실패:', err.message);
+    }
+  }
+
   async function parseProtectedJsonResponse(response) {
     const text = await response.text();
     const cleanText = Shared.stripJsonProtectionPrefix
@@ -434,6 +453,8 @@
       dlBtn.disabled = false;
       warmDownloadUrlCache(downloadablePDFs.filter((p) => !downloadedFiles[p.contentId]));
     }
+
+    maybeAutoDownloadScannedPdfs(currentPDFs);
   }
 
   function renderPDFList() {
@@ -743,6 +764,28 @@
     lines.push(`URL: ${redactUrl(window.location.href)}`);
     lines.push(`시간: ${new Date().toISOString()}`);
     lines.push('주의: 기본 진단은 공개 Issue 첨부를 위해 식별자와 URL을 마스킹합니다.');
+    lines.push('');
+
+    try {
+      const autoState = await sendRuntimeMessage({ action: 'getAutoDownloadState' });
+      if (autoState && autoState.success) {
+        lines.push('자동 백업 상태:');
+        lines.push(`  enabled: ${autoState.autoDownloadOnLogin}`);
+        lines.push(`  running: ${autoState.running}`);
+        lines.push(`  lastStartedAt: ${autoState.autoDownloadLastStartedAt ? new Date(autoState.autoDownloadLastStartedAt).toISOString() : '없음'}`);
+        lines.push(`  lastNoCourseAt: ${autoState.autoDownloadLastNoCourseAt ? new Date(autoState.autoDownloadLastNoCourseAt).toISOString() : '없음'}`);
+        if (autoState.autoDownloadLastSummary) {
+          lines.push(`  summary.state: ${autoState.autoDownloadLastSummary.state || 'unknown'}`);
+          lines.push(`  summary.courseCount: ${autoState.autoDownloadLastSummary.courseCount}`);
+          lines.push(`  summary.candidateCount: ${autoState.autoDownloadLastSummary.candidateCount}`);
+          lines.push(`  summary.downloadCount: ${autoState.autoDownloadLastSummary.downloadCount}`);
+        } else {
+          lines.push('  summary: 없음');
+        }
+      }
+    } catch (err) {
+      lines.push(`자동 백업 상태 조회 실패: ${err.message}`);
+    }
     lines.push('');
 
     // injector에서 LX 캐시 상태 수집
