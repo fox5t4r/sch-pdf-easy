@@ -543,16 +543,13 @@
     if (!isDownloadableNow(pdf)) {
       throw new Error('접근 가능한 자료만 다운로드할 수 있습니다.');
     }
-    const downloadUrl = await getDownloadUrl(pdf);
     const safeTitle = Shared.sanitizeFilename ? Shared.sanitizeFilename(pdf.title, 'download') : sanitizeFilename(pdf.title);
     const filename = `${safeTitle}.${pdf.ext || 'pdf'}`;
 
     const response = await sendRuntimeMessage({
-      action: 'startDownloadPDF',
-      url: downloadUrl,
+      action: 'startResolvedDownloadPDF',
+      pdf,
       filename,
-      contentId: pdf.contentId,
-      title: pdf.title,
     });
 
     if (!(Shared.isDownloadResponseSuccess ? Shared.isDownloadResponseSuccess(response) : response && response.success)) {

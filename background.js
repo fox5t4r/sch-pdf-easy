@@ -69,6 +69,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // async response
   }
 
+  if (message.action === 'startResolvedDownloadPDF') {
+    startResolvedDownload(message, sender)
+      .then((result) => sendResponse(result))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
   if (message.action === 'downloadPDF') {
     handleDownload(message, sendResponse);
     return true; // async response
@@ -152,13 +159,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function resolveDownloadUrl(rawPdf) {
+  const candidates = await resolveDownloadUrlCandidates(rawPdf);
+  if (candidates.length === 0) throw new Error('No download URL candidate');
+  return candidates[0];
+}
+
+async function resolveDownloadUrlCandidates(rawPdf) {
   const pdf = Shared.normalizeDownloadCandidate(rawPdf);
   if (!pdf) throw new Error('Invalid download metadata');
 
   if (pdf.directUrl) {
     const directUrl = DownloadUtils.resolveDirectUrl(pdf.directUrl);
     if (!directUrl) throw new Error('Blocked: untrusted direct URL');
-    return directUrl;
+    return [directUrl];
   }
 
   const effectiveContentId = pdf.type === 'lx_resource' && pdf.lxContentId
@@ -173,45 +186,106 @@ async function resolveDownloadUrl(rawPdf) {
   const candidates = DownloadUtils.resolveCommonsDownloadUrlCandidatesFromXml
     ? DownloadUtils.resolveCommonsDownloadUrlCandidatesFromXml(xmlText, pdf)
     : [DownloadUtils.resolveCommonsDownloadUrlFromXml(xmlText, pdf)];
-  const resolvedUrl = await chooseNonEmptyDownloadUrl(candidates, pdf);
-  const allowedUrl = Shared.resolveAllowedDownloadUrl(resolvedUrl);
-  if (!allowedUrl) throw new Error('Blocked: untrusted resolved URL');
-  return allowedUrl;
+  return candidates
+    .map((url) => {
+      if (!url) return null;
+      let candidate = url;
+      if (pdf.type !== 'lx_resource') {
+        candidate = DownloadUtils.appendFileNameParam(candidate, pdf.title);
+      }
+      return Shared.resolveAllowedDownloadUrl(candidate);
+    })
+    .filter(Boolean);
 }
 
-async function chooseNonEmptyDownloadUrl(candidates, pdf) {
-  let lastError = null;
-  for (let url of candidates) {
-    if (!url) continue;
-    if (pdf.type !== 'lx_resource') {
-      url = DownloadUtils.appendFileNameParam(url, pdf.title);
-    }
-    const allowedUrl = Shared.resolveAllowedDownloadUrl(url);
-    if (!allowedUrl) continue;
-    try {
-      const usable = await isLikelyNonEmptyDownloadUrl(allowedUrl);
-      if (usable) return allowedUrl;
-    } catch (err) {
-      lastError = err;
-    }
-  }
-  if (lastError) throw lastError;
-  throw new Error('No non-empty download URL candidate');
-}
+async function startResolvedDownload(message, sender) {
+  const pdf = Shared.normalizeDownloadCandidate(message.pdf);
+  if (!pdf) throw new Error('Invalid download metadata');
 
-async function isLikelyNonEmptyDownloadUrl(url) {
-  const response = await fetch(url, {
-    method: 'HEAD',
-    credentials: 'include',
-    redirect: 'follow',
+  const requestedName = message.filename || `${pdf.title}.${pdf.ext || 'pdf'}`;
+  const safeName = Shared.sanitizeFilename(requestedName, 'download.pdf');
+  const urls = await resolveDownloadUrlCandidates(pdf);
+  if (urls.length === 0) throw new Error('No download URL candidate');
+
+  const downloadId = await startRetryableDownload(urls, {
+    filename: safeName,
+    contentId: pdf.contentId,
+    title: pdf.title,
+    tabId: sender && sender.tab ? sender.tab.id : null,
   });
-  if (response.status === 405 || response.status === 501) return true;
-  if (!response.ok) return false;
-  const contentLength = response.headers.get('content-length');
-  if (contentLength != null && Number(contentLength) === 0) return false;
-  const contentType = String(response.headers.get('content-type') || '').toLowerCase();
-  if (contentType.includes('text/html')) return false;
-  return true;
+
+  return { success: true, downloadId, started: true };
+}
+
+async function startRetryableDownload(urls, pendingBase, index = 0) {
+  const url = urls[index];
+  const downloadId = await chrome.downloads.download({
+    url,
+    filename: `SCH_PDF/${pendingBase.filename}`,
+    conflictAction: 'uniquify',
+  });
+
+  await rememberPendingDownload(downloadId, {
+    contentId: String(pendingBase.contentId || '').trim(),
+    title: String(pendingBase.title || '').slice(0, 300),
+    tabId: pendingBase.tabId == null ? null : pendingBase.tabId,
+    retry: {
+      urls,
+      index,
+      filename: pendingBase.filename,
+    },
+  });
+
+  return downloadId;
+}
+
+function isZeroByteDownload(downloadItem) {
+  if (!downloadItem) return false;
+  const bytesReceived = Number(downloadItem.bytesReceived || 0);
+  const fileSize = Number(downloadItem.fileSize || 0);
+  return bytesReceived === 0 && fileSize === 0;
+}
+
+function cleanupZeroByteDownload(downloadId) {
+  chrome.downloads.removeFile(downloadId, () => {
+    void chrome.runtime.lastError;
+    chrome.downloads.erase({ id: downloadId }, () => {
+      void chrome.runtime.lastError;
+    });
+  });
+}
+
+function handleRetryableDownloadTerminal(downloadId, state, pending) {
+  chrome.downloads.search({ id: downloadId }, async (items) => {
+    const item = items && items[0];
+    const shouldRetry = state !== 'complete' || isZeroByteDownload(item);
+    const retry = pending.retry;
+
+    if (!shouldRetry) {
+      notifyDownloadStatus(downloadId, 'complete', '', pending);
+      return;
+    }
+
+    if (state === 'complete') cleanupZeroByteDownload(downloadId);
+    forgetPendingDownload(downloadId);
+
+    const nextIndex = retry.index + 1;
+    if (!retry.urls || nextIndex >= retry.urls.length) {
+      notifyDownloadStatus(downloadId, 'interrupted', state === 'complete' ? 'Empty download after all URL candidates' : `Download ${state}`, pending);
+      return;
+    }
+
+    try {
+      await startRetryableDownload(retry.urls, {
+        filename: retry.filename,
+        contentId: pending.contentId,
+        title: pending.title,
+        tabId: pending.tabId,
+      }, nextIndex);
+    } catch (err) {
+      notifyDownloadStatus(downloadId, 'interrupted', err.message, pending);
+    }
+  });
 }
 
 async function maybeStartAutoDownload() {
@@ -557,16 +631,12 @@ async function runWithConcurrency(items, concurrency, worker) {
 }
 
 async function autoDownloadSingle(pdf) {
-  const downloadUrl = await resolveDownloadUrl(pdf);
   const safeTitle = Shared.sanitizeFilename(pdf.title, 'download');
   const filename = `${safeTitle}.${pdf.ext || 'pdf'}`;
-  const downloadId = await chrome.downloads.download({
-    url: downloadUrl,
-    filename: `SCH_PDF/${filename}`,
-    conflictAction: 'uniquify',
-  });
-
-  await rememberPendingDownload(downloadId, {
+  const urls = await resolveDownloadUrlCandidates(pdf);
+  if (urls.length === 0) throw new Error('No download URL candidate');
+  await startRetryableDownload(urls, {
+    filename,
     contentId: pdf.contentId,
     title: pdf.title,
     tabId: null,
@@ -660,6 +730,10 @@ chrome.downloads.onChanged.addListener((delta) => {
 
   const pending = _pendingStartedDownloads.get(delta.id);
   if (pending) {
+    if (pending.retry) {
+      handleRetryableDownloadTerminal(delta.id, state, pending);
+      return;
+    }
     notifyDownloadStatus(delta.id, state, state === 'complete' ? '' : `Download ${state}`, pending);
     return;
   }
@@ -669,6 +743,10 @@ chrome.downloads.onChanged.addListener((delta) => {
   getPendingDownloads((allPending) => {
     const restored = allPending[delta.id];
     if (restored) {
+      if (restored.retry) {
+        handleRetryableDownloadTerminal(delta.id, state, restored);
+        return;
+      }
       notifyDownloadStatus(delta.id, state, state === 'complete' ? '' : `Download ${state}`, restored);
     }
   });
