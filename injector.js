@@ -31,9 +31,10 @@
   // 이벤트 수신
   // ────────────────────────────────────────────────────────
 
-  document.addEventListener('__SPE_SCAN_REQUEST', function () {
+  document.addEventListener('__SPE_SCAN_REQUEST', function (event) {
     _idCounter = 0;
-    performScan();
+    var requestId = event && event.detail && event.detail.requestId;
+    performScan(requestId);
   });
 
   // ────────────────────────────────────────────────────────
@@ -53,7 +54,7 @@
   function isAllowedHref(href) {
     return (
       typeof href === 'string' &&
-      (href.startsWith('/') || href.startsWith('https://') || href.startsWith('http://'))
+      (href.startsWith('/') || href.startsWith('https://'))
     );
   }
 
@@ -65,20 +66,20 @@
   // 스캔 진입점
   // ────────────────────────────────────────────────────────
 
-  async function performScan() {
+  async function performScan(requestId) {
     var iframe = document.getElementById('tool_content');
-    if (!iframe) { sendResult({ success: false, error: 'iframe#tool_content을 찾을 수 없습니다.' }); return; }
+    if (!iframe) { sendResult({ success: false, error: 'iframe#tool_content을 찾을 수 없습니다.' }, requestId); return; }
 
     var iframeDoc;
     try {
       iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
     } catch (e) {
-      sendResult({ success: false, error: 'iframe 접근 불가: ' + e.message }); return;
+      sendResult({ success: false, error: 'iframe 접근 불가: ' + e.message }, requestId); return;
     }
-    if (!iframeDoc) { sendResult({ success: false, error: 'iframe document가 null입니다.' }); return; }
+    if (!iframeDoc) { sendResult({ success: false, error: 'iframe document가 null입니다.' }, requestId); return; }
 
     var root = iframeDoc.getElementById('root');
-    if (!root) { sendResult({ success: false, error: 'iframe 내부 #root를 찾을 수 없습니다.' }); return; }
+    if (!root) { sendResult({ success: false, error: 'iframe 내부 #root를 찾을 수 없습니다.' }, requestId); return; }
 
     // ── 방법 A: Redux Store (coursebuilder / 강의콘텐츠) ──
     var fiberKey = Object.keys(root).find(function (k) {
@@ -90,7 +91,7 @@
         try {
           var state = store.getState();
           var sections = (state.sections && state.sections.sections) || (state.section && state.section.sections) || [];
-          sendResult({ success: true, pdfs: extractFromRedux(sections) });
+          sendResult({ success: true, pdfs: extractFromRedux(sections) }, requestId);
           return;
         } catch (e) { /* Redux 파싱 실패 → DOM 스캔으로 폴백 */ }
       }
@@ -98,9 +99,9 @@
 
     // ── 방법 B: DOM 스캔 (courseresource / 강의자료실) ──
     var domFiles = await extractFromCourseResource(iframeDoc);
-    if (domFiles.length > 0) { sendResult({ success: true, pdfs: domFiles }); return; }
+    if (domFiles.length > 0) { sendResult({ success: true, pdfs: domFiles }, requestId); return; }
 
-    sendResult({ success: false, error: 'PDF/PPT를 찾을 수 없습니다. (페이지 로딩 중이거나 자료 없음)' });
+    sendResult({ success: false, error: 'PDF/PPT를 찾을 수 없습니다. (페이지 로딩 중이거나 자료 없음)' }, requestId);
   }
 
   // ────────────────────────────────────────────────────────
@@ -507,7 +508,9 @@
   // 결과 전송
   // ────────────────────────────────────────────────────────
 
-  function sendResult(data) {
-    document.dispatchEvent(new CustomEvent('__SPE_SCAN_RESULT', { detail: data }));
+  function sendResult(data, requestId) {
+    var detail = data || {};
+    detail.requestId = requestId || '';
+    document.dispatchEvent(new CustomEvent('__SPE_SCAN_RESULT', { detail: detail }));
   }
 })();
