@@ -14,6 +14,16 @@
   "content_scripts": [
     {
       "matches": [
+        "https://medlms.sch.ac.kr/*"
+      ],
+      "js": [
+        "auto_sync.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
         "https://medlms.sch.ac.kr/courses/*/external_tools/*"
       ],
       "js": [
