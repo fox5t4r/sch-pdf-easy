@@ -36,6 +36,7 @@
   let downloadedFiles = {};
   let _progressTimer = null;
   let _urlPrefetchRunId = 0;
+  let _autoPageScanStarted = false;
   const _downloadUrlCache = new Map();
   const _downloadUrlInflight = new Map();
   const _pendingDownloadItems = new Map();
@@ -384,7 +385,7 @@
   // 6. 스캔 로직 (Redux + Canvas API 병합)
   // ──────────────────────────────────────────────
 
-  async function scanForPDFs() {
+  async function scanForPDFs(options = {}) {
     const listEl = document.getElementById('spe-pdf-list');
     const dlBtn = document.getElementById('spe-download-btn');
     const dlAllBtn = document.getElementById('spe-download-all-btn');
@@ -427,6 +428,7 @@
       const reason = !finalRedux.success ? finalRedux.error || 'PDF 없음' : 'PDF 없음';
       setStatus(reason, 'warn');
       listEl.innerHTML = `<div class="spe-empty-state"><span>검색된 파일 없음</span></div>`;
+      if (options.autoPageScan) notifyAutoPageScanDone('empty');
       return;
     }
 
@@ -455,6 +457,15 @@
     }
 
     maybeAutoDownloadScannedPdfs(currentPDFs);
+    if (options.autoPageScan) notifyAutoPageScanDone('scanned');
+  }
+
+  function notifyAutoPageScanDone(state) {
+    sendRuntimeMessage({
+      action: 'autoCoursePageScanDone',
+      state,
+      foundCount: currentPDFs.length,
+    }).catch(() => {});
   }
 
   function renderPDFList() {
@@ -910,10 +921,22 @@
   function init() {
     if (!window.location.href.includes('external_tools')) return;
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', injectUI);
+      document.addEventListener('DOMContentLoaded', () => {
+        injectUI();
+        maybeRunAutoPageScan();
+      });
     } else {
       injectUI();
+      maybeRunAutoPageScan();
     }
+  }
+
+  function maybeRunAutoPageScan() {
+    if (_autoPageScanStarted || !window.location.hash.includes('spe-auto-download')) return;
+    _autoPageScanStarted = true;
+    setTimeout(() => {
+      scanForPDFs({ autoPageScan: true }).catch(() => notifyAutoPageScanDone('error'));
+    }, 2500);
   }
 
   init();

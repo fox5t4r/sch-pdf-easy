@@ -24,6 +24,7 @@ const {
   appendFileNameParam,
   buildFallbackCommonsDownloadUrl,
   extractXmlTag,
+  resolveCommonsDownloadUrlCandidatesFromXml,
   resolveCommonsDownloadUrlFromXml,
 } = require('../download_utils.js');
 
@@ -229,6 +230,25 @@ test('normalizeDownloadConcurrency clamps invalid and excessive values', () => {
   assert.equal(normalizeDownloadConcurrency('3', 5, 8), 3);
   assert.equal(normalizeDownloadConcurrency(10, 5, 8), 8);
   assert.equal(normalizeDownloadConcurrency(4.7, 5, 8), 4);
+});
+
+test('download utils returns ordered Commons URL candidates', () => {
+  const xml = [
+    '<root>',
+    '<content_download_uri>/download.php?a=1&amp;b=2</content_download_uri>',
+    '<content_type>sharedocs</content_type>',
+    '<content_uri>https://commons.sch.ac.kr/contents/x/web_files</content_uri>',
+    '</root>',
+  ].join('');
+
+  assert.deepEqual(
+    resolveCommonsDownloadUrlCandidatesFromXml(xml, { contentId: 'cid', ext: 'pdf', type: 'commons' }),
+    [
+      'https://commons.sch.ac.kr/download.php?a=1&b=2',
+      'https://commons.sch.ac.kr/contents/x/source/original.pdf',
+      buildFallbackCommonsDownloadUrl('cid', 'pdf'),
+    ]
+  );
 });
 
 test('stripJsonProtectionPrefix removes Canvas XSSI guards', () => {

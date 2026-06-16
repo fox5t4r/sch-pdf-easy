@@ -49,10 +49,21 @@
   }
 
   function resolveCommonsDownloadUrlFromXml(xmlText, pdf) {
+    const candidates = resolveCommonsDownloadUrlCandidatesFromXml(xmlText, pdf);
+    return candidates[0] || buildFallbackCommonsDownloadUrl(
+      pdf.type === 'lx_resource' && pdf.lxContentId ? pdf.lxContentId : pdf.contentId,
+      pdf.ext || 'pdf'
+    );
+  }
+
+  function resolveCommonsDownloadUrlCandidatesFromXml(xmlText, pdf) {
+    const candidates = [];
+
     const downloadUri = extractXmlTag(xmlText, 'content_download_uri');
     if (downloadUri) {
       const candidate = /^https?:\/\//i.test(downloadUri) ? downloadUri : COMMONS_BASE + downloadUri;
-      return Shared.resolveAllowedDownloadUrl(candidate);
+      const resolved = Shared.resolveAllowedDownloadUrl(candidate);
+      if (resolved) candidates.push(resolved);
     }
 
     const contentType = extractXmlTag(xmlText, 'content_type');
@@ -61,11 +72,14 @@
       const contentUrl = new URL(contentUri, COMMONS_BASE);
       contentUrl.pathname = contentUrl.pathname.replace(/\/web_files\/?$/, '/source/original.' + (pdf.ext || 'pdf'));
       const resolved = Shared.resolveAllowedDownloadUrl(contentUrl.toString());
-      if (resolved) return resolved;
+      if (resolved) candidates.push(resolved);
     }
 
     const effectiveContentId = pdf.type === 'lx_resource' && pdf.lxContentId ? pdf.lxContentId : pdf.contentId;
-    return buildFallbackCommonsDownloadUrl(effectiveContentId, pdf.ext || 'pdf');
+    const fallback = Shared.resolveAllowedDownloadUrl(buildFallbackCommonsDownloadUrl(effectiveContentId, pdf.ext || 'pdf'));
+    if (fallback) candidates.push(fallback);
+
+    return Array.from(new Set(candidates));
   }
 
   return {
@@ -76,6 +90,7 @@
     buildContentApiUrl,
     buildFallbackCommonsDownloadUrl,
     extractXmlTag,
+    resolveCommonsDownloadUrlCandidatesFromXml,
     resolveCommonsDownloadUrlFromXml,
     resolveDirectUrl,
   };

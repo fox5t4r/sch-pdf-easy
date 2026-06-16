@@ -5,7 +5,8 @@
   "description": "순천향대 LMS(medlms.sch.ac.kr) 강의 PDF 자료를 한 번에 다운로드합니다.",
   "permissions": [
     "downloads",
-    "storage"
+    "storage",
+    "tabs"
   ],
   "host_permissions": [
     "https://medlms.sch.ac.kr/*",

@@ -18,6 +18,7 @@ const AUTO_DOWNLOAD_DEFAULT_CONCURRENCY = 2;
 const _pendingStartedDownloads = new Map();
 const PENDING_DOWNLOADS_KEY = 'pendingStartedDownloads';
 let _autoDownloadRun = null;
+const _autoScanTabs = new Set();
 
 // 스토리지 쓰기 직렬화: 동시 다운로드 완료 시 read-modify-write 경쟁 방지
 let _writeQueue = Promise.resolve();
@@ -118,6 +119,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.action === 'autoCoursePageScanDone') {
+    const tabId = sender && sender.tab && sender.tab.id;
+    if (tabId != null && _autoScanTabs.has(tabId)) {
+      _autoScanTabs.delete(tabId);
+      chrome.tabs.remove(tabId, () => {
+        void chrome.runtime.lastError;
+      });
+    }
+    sendResponse({ success: true });
+    return true;
+  }
+
   if (message.action === 'getDownloaded') {
     chrome.storage.local.get('downloadedFiles', (data) => {
       sendResponse(data.downloadedFiles || {});
@@ -157,16 +170,48 @@ async function resolveDownloadUrl(rawPdf) {
   if (!response.ok) throw new Error(`Content metadata request failed: ${response.status}`);
 
   const xmlText = await response.text();
-  let resolvedUrl = DownloadUtils.resolveCommonsDownloadUrlFromXml(xmlText, pdf);
-
-  // 기존 commons 자료는 file_name 파라미터로 브라우저 저장명을 보정한다.
-  if (pdf.type !== 'lx_resource') {
-    resolvedUrl = DownloadUtils.appendFileNameParam(resolvedUrl, pdf.title);
-  }
-
+  const candidates = DownloadUtils.resolveCommonsDownloadUrlCandidatesFromXml
+    ? DownloadUtils.resolveCommonsDownloadUrlCandidatesFromXml(xmlText, pdf)
+    : [DownloadUtils.resolveCommonsDownloadUrlFromXml(xmlText, pdf)];
+  const resolvedUrl = await chooseNonEmptyDownloadUrl(candidates, pdf);
   const allowedUrl = Shared.resolveAllowedDownloadUrl(resolvedUrl);
   if (!allowedUrl) throw new Error('Blocked: untrusted resolved URL');
   return allowedUrl;
+}
+
+async function chooseNonEmptyDownloadUrl(candidates, pdf) {
+  let lastError = null;
+  for (let url of candidates) {
+    if (!url) continue;
+    if (pdf.type !== 'lx_resource') {
+      url = DownloadUtils.appendFileNameParam(url, pdf.title);
+    }
+    const allowedUrl = Shared.resolveAllowedDownloadUrl(url);
+    if (!allowedUrl) continue;
+    try {
+      const usable = await isLikelyNonEmptyDownloadUrl(allowedUrl);
+      if (usable) return allowedUrl;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  if (lastError) throw lastError;
+  throw new Error('No non-empty download URL candidate');
+}
+
+async function isLikelyNonEmptyDownloadUrl(url) {
+  const response = await fetch(url, {
+    method: 'HEAD',
+    credentials: 'include',
+    redirect: 'follow',
+  });
+  if (response.status === 405 || response.status === 501) return true;
+  if (!response.ok) return false;
+  const contentLength = response.headers.get('content-length');
+  if (contentLength != null && Number(contentLength) === 0) return false;
+  const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+  if (contentType.includes('text/html')) return false;
+  return true;
 }
 
 async function maybeStartAutoDownload() {
@@ -231,6 +276,8 @@ async function runAutoDownloadAllCourses(concurrency) {
   }
 
   await chrome.storage.local.set({ autoDownloadLastStartedAt: Date.now() });
+
+  await scanCoursebuilderPages(courses);
 
   for (const course of courses.slice(0, AUTO_DOWNLOAD_COURSE_LIMIT)) {
     try {
@@ -298,6 +345,58 @@ async function autoDownloadCandidates(rawCandidates) {
 
   await runWithConcurrency(targets, concurrency, autoDownloadSingle);
   return { success: true, started: true, downloadCount: targets.length };
+}
+
+async function scanCoursebuilderPages(courses) {
+  const targets = courses.slice(0, AUTO_DOWNLOAD_COURSE_LIMIT);
+  await chrome.storage.local.set({
+    autoDownloadLastSummary: {
+      checkedAt: new Date().toISOString(),
+      state: 'coursebuilder-tab-scan',
+      courseCount: targets.length,
+      candidateCount: 0,
+      downloadCount: 0,
+    },
+  });
+
+  for (const course of targets) {
+    await scanCoursebuilderPage(course);
+  }
+}
+
+function scanCoursebuilderPage(course) {
+  return new Promise((resolve) => {
+    const url = `${DownloadUtils.MEDLMS_BASE}/courses/${encodeURIComponent(course.id)}/external_tools/1#spe-auto-download`;
+    chrome.tabs.create({ url, active: false }, (tab) => {
+      if (chrome.runtime.lastError || !tab || tab.id == null) {
+        resolve();
+        return;
+      }
+
+      const tabId = tab.id;
+      _autoScanTabs.add(tabId);
+      const timeoutId = setTimeout(() => {
+        chrome.runtime.onMessage.removeListener(onDone);
+        if (_autoScanTabs.has(tabId)) {
+          _autoScanTabs.delete(tabId);
+          chrome.tabs.remove(tabId, () => {
+            void chrome.runtime.lastError;
+          });
+        }
+        resolve();
+      }, 45000);
+
+      function onDone(message, sender) {
+        if (!message || message.action !== 'autoCoursePageScanDone') return;
+        if (!sender || !sender.tab || sender.tab.id !== tabId) return;
+        chrome.runtime.onMessage.removeListener(onDone);
+        clearTimeout(timeoutId);
+        resolve();
+      }
+
+      chrome.runtime.onMessage.addListener(onDone);
+    });
+  });
 }
 
 function getDownloadedFiles() {
