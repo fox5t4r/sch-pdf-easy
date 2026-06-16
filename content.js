@@ -167,6 +167,14 @@
     return (Array.isArray(pdfs) ? pdfs : []).filter(isDownloadableNow);
   }
 
+  async function parseProtectedJsonResponse(response) {
+    const text = await response.text();
+    const cleanText = Shared.stripJsonProtectionPrefix
+      ? Shared.stripJsonProtectionPrefix(text)
+      : String(text || '').replace(/^\s*while\s*\(\s*1\s*\)\s*;\s*/, '');
+    return JSON.parse(cleanText);
+  }
+
   // ──────────────────────────────────────────────
   // 3. injector.js와 CustomEvent 통신 (강의콘텐츠)
   // ──────────────────────────────────────────────
@@ -248,7 +256,7 @@
         const res = await fetch(nextUrl, { credentials: 'include' });
         if (!res.ok) break;
 
-        const files = await res.json();
+        const files = await parseProtectedJsonResponse(res);
         if (!Array.isArray(files)) break;
         allFiles.push(...files);
 
@@ -778,7 +786,7 @@
         lines.push(`  HTTP 상태: ${r.status}`);
         if (r.ok) {
           try {
-            const parsed = await r.json();
+            const parsed = await parseProtectedJsonResponse(r);
             const arr = Array.isArray(parsed) ? parsed : null;
             if (arr) {
               lines.push(`  결과: ${arr.length}개`);

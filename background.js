@@ -230,10 +230,12 @@ async function fetchCourses() {
   } catch (err) {
     console.debug('[SCH PDF Easy] 즐겨찾기 과목 조회 실패:', err.message);
   }
-  if (favorites.length > 0) return favorites.filter((course) => course && course.id);
+  const filterCourses = Shared.filterCurrentStudentCourses ||
+    ((courses) => courses.filter((course) => course && course.id));
+  if (favorites.length > 0) return filterCourses(favorites);
 
   const active = await fetchPaginatedJson('/api/v1/courses?enrollment_state=active&per_page=100');
-  return active.filter((course) => course && course.id);
+  return filterCourses(active);
 }
 
 async function fetchCanvasFileCandidates(course) {
@@ -328,7 +330,7 @@ async function fetchPaginatedJson(url) {
     if (response.status === 401 || response.status === 403) return results;
     if (!response.ok) throw new Error(`API request failed: ${response.status}`);
 
-    const data = await response.json();
+    const data = await parseProtectedJsonResponse(response);
     const arr = Array.isArray(data) ? data : (data.courses || data.resources || data.items || data.data || []);
     if (Array.isArray(arr)) results.push(...arr);
     const nextLink = Shared.getNextLinkFromHeader(response.headers.get('Link'));
@@ -341,13 +343,21 @@ async function fetchJsonArray(url) {
   const response = await fetch(toMedlmsUrl(url), { credentials: 'include' });
   if (response.status === 401 || response.status === 403) return [];
   if (!response.ok) throw new Error(`API request failed: ${response.status}`);
-  const data = await response.json();
+  const data = await parseProtectedJsonResponse(response);
   const arr = Array.isArray(data) ? data : (data.resources || data.items || data.data || []);
   return Array.isArray(arr) ? arr : [];
 }
 
 function toMedlmsUrl(url) {
   return new URL(url, DownloadUtils.MEDLMS_BASE).toString();
+}
+
+async function parseProtectedJsonResponse(response) {
+  const text = await response.text();
+  const cleanText = Shared.stripJsonProtectionPrefix
+    ? Shared.stripJsonProtectionPrefix(text)
+    : String(text || '').replace(/^\s*while\s*\(\s*1\s*\)\s*;\s*/, '');
+  return JSON.parse(cleanText);
 }
 
 async function runWithConcurrency(items, concurrency, worker) {

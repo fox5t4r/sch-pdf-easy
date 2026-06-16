@@ -121,6 +121,46 @@
     return Math.min(maxValue, Math.floor(numeric));
   }
 
+  function stripJsonProtectionPrefix(text) {
+    return String(text || '')
+      .replace(/^\s*while\s*\(\s*1\s*\)\s*;\s*/, '')
+      .replace(/^\s*for\s*\(\s*;\s*;\s*\)\s*;\s*/, '');
+  }
+
+  function hasActiveStudentEnrollment(course) {
+    const enrollments = course && Array.isArray(course.enrollments) ? course.enrollments : [];
+    return enrollments.some((enrollment) => {
+      const state = String(enrollment.enrollment_state || '').toLowerCase();
+      const type = String(enrollment.type || '').toLowerCase();
+      const role = String(enrollment.role || '').toLowerCase();
+      return state === 'active' && (type === 'student' || role === 'studentenrollment');
+    });
+  }
+
+  function isWithinCourseDates(course, now) {
+    const nowMs = now == null ? Date.now() : (now instanceof Date ? now.getTime() : Number(now));
+    const currentMs = Number.isFinite(nowMs) ? nowMs : Date.now();
+    const startMs = course && course.start_at ? new Date(course.start_at).getTime() : null;
+    const endMs = course && course.end_at ? new Date(course.end_at).getTime() : null;
+
+    if (startMs && currentMs < startMs) return false;
+    if (endMs && currentMs > endMs) return false;
+    return true;
+  }
+
+  function filterCurrentStudentCourses(courses, now) {
+    const list = Array.isArray(courses) ? courses : [];
+    const active = list.filter((course) => {
+      if (!course || !course.id) return false;
+      if (course.workflow_state && course.workflow_state !== 'available') return false;
+      if (!hasActiveStudentEnrollment(course)) return false;
+      return isWithinCourseDates(course, now);
+    });
+
+    const onCampus = active.filter((course) => course.course_format === 'on_campus');
+    return onCampus.length > 0 ? onCampus : active;
+  }
+
   function hasOwn(object, key) {
     return Object.prototype.hasOwnProperty.call(object, key);
   }
@@ -344,5 +384,7 @@
     resolveAllowedDownloadUrl,
     sanitizeFilename,
     shouldRefreshLxCache,
+    filterCurrentStudentCourses,
+    stripJsonProtectionPrefix,
   };
 });

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   buildLxResourceEntry,
+  filterCurrentStudentCourses,
   getAvailabilityStatus,
   getNextLinkFromHeader,
   isAllowedDownloadUrl,
@@ -16,6 +17,7 @@ const {
   resolveAllowedDownloadUrl,
   sanitizeFilename,
   shouldRefreshLxCache,
+  stripJsonProtectionPrefix,
 } = require('../shared.js');
 
 const {
@@ -223,4 +225,42 @@ test('normalizeDownloadConcurrency clamps invalid and excessive values', () => {
   assert.equal(normalizeDownloadConcurrency('3', 5, 8), 3);
   assert.equal(normalizeDownloadConcurrency(10, 5, 8), 8);
   assert.equal(normalizeDownloadConcurrency(4.7, 5, 8), 4);
+});
+
+test('stripJsonProtectionPrefix removes Canvas XSSI guards', () => {
+  assert.equal(stripJsonProtectionPrefix('while(1);[{"id":1}]'), '[{"id":1}]');
+  assert.equal(stripJsonProtectionPrefix('for(;;);{"ok":true}'), '{"ok":true}');
+});
+
+test('filterCurrentStudentCourses prefers active on-campus student courses', () => {
+  const now = Date.parse('2026-06-16T00:00:00.000Z');
+  const courses = [
+    {
+      id: 50105,
+      name: '2026학년도 맛있는SW시리즈',
+      workflow_state: 'available',
+      end_at: '2026-06-26T14:59:00Z',
+      enrollments: [{ type: 'student', role: 'StudentEnrollment', enrollment_state: 'active' }],
+    },
+    {
+      id: 49561,
+      name: '알고리즘(13563)',
+      workflow_state: 'available',
+      course_format: 'on_campus',
+      enrollments: [{ type: 'student', role: 'StudentEnrollment', enrollment_state: 'active' }],
+    },
+    {
+      id: 49000,
+      name: '지난 강의',
+      workflow_state: 'available',
+      course_format: 'on_campus',
+      end_at: '2026-01-01T00:00:00Z',
+      enrollments: [{ type: 'student', role: 'StudentEnrollment', enrollment_state: 'active' }],
+    },
+  ];
+
+  assert.deepEqual(
+    filterCurrentStudentCourses(courses, now).map((course) => course.id),
+    [49561]
+  );
 });
