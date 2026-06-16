@@ -121,6 +121,155 @@
     return Math.min(maxValue, Math.floor(numeric));
   }
 
+  function hasOwn(object, key) {
+    return Object.prototype.hasOwnProperty.call(object, key);
+  }
+
+  function firstDefined(source, keys) {
+    if (!source || typeof source !== 'object') return undefined;
+    for (const key of keys) {
+      if (hasOwn(source, key) && source[key] != null && source[key] !== '') return source[key];
+    }
+    return undefined;
+  }
+
+  function normalizeDateValue(value) {
+    if (value == null || value === '') return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toISOString();
+  }
+
+  function normalizeBoolean(value) {
+    if (value === true || value === false) return value;
+    if (typeof value === 'string') {
+      const lower = value.trim().toLowerCase();
+      if (lower === 'true' || lower === '1' || lower === 'yes') return true;
+      if (lower === 'false' || lower === '0' || lower === 'no') return false;
+    }
+    if (typeof value === 'number') return value !== 0;
+    return false;
+  }
+
+  function normalizeAvailability(source) {
+    const raw = source && source.availability && typeof source.availability === 'object'
+      ? source.availability
+      : source;
+    if (!raw || typeof raw !== 'object') return null;
+
+    const unlockAtRaw = firstDefined(raw, [
+      'unlockAt',
+      'unlock_at',
+      'availableFrom',
+      'available_from',
+      'available_at',
+      'openAt',
+      'open_at',
+      'startAt',
+      'start_at',
+    ]);
+    const lockAtRaw = firstDefined(raw, [
+      'lockAt',
+      'lock_at',
+      'availableUntil',
+      'available_until',
+      'closeAt',
+      'close_at',
+      'endAt',
+      'end_at',
+      'dueAt',
+      'due_at',
+    ]);
+    const lockedRaw = firstDefined(raw, [
+      'locked',
+      'lockedForUser',
+      'locked_for_user',
+      'isLocked',
+      'is_locked',
+      'restricted',
+    ]);
+    const hiddenRaw = firstDefined(raw, [
+      'hidden',
+      'isHidden',
+      'is_hidden',
+      'unpublished',
+      'is_unpublished',
+    ]);
+
+    const unlockAt = normalizeDateValue(unlockAtRaw);
+    const lockAt = normalizeDateValue(lockAtRaw);
+    const locked = normalizeBoolean(lockedRaw);
+    const hidden = normalizeBoolean(hiddenRaw);
+
+    if (!unlockAt && !lockAt && !locked && !hidden) return null;
+
+    return {
+      unlockAt,
+      lockAt,
+      locked,
+      hidden,
+    };
+  }
+
+  function formatDateLabel(iso) {
+    if (!iso) return '';
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toISOString().slice(0, 10);
+  }
+
+  function getAvailabilityStatus(availability, now) {
+    const normalized = normalizeAvailability(availability);
+    const nowMs = now == null ? Date.now() : (now instanceof Date ? now.getTime() : Number(now));
+    const currentMs = Number.isFinite(nowMs) ? nowMs : Date.now();
+
+    if (!normalized) {
+      return { state: 'available', label: '접근 가능', downloadable: true, urgency: 0 };
+    }
+    if (normalized.hidden || normalized.locked) {
+      return { state: 'restricted', label: '접근 제한', downloadable: false, urgency: 0 };
+    }
+
+    const unlockAtMs = normalized.unlockAt ? new Date(normalized.unlockAt).getTime() : null;
+    const lockAtMs = normalized.lockAt ? new Date(normalized.lockAt).getTime() : null;
+
+    if (unlockAtMs && currentMs < unlockAtMs) {
+      return { state: 'upcoming', label: formatDateLabel(normalized.unlockAt) + ' 공개 예정', downloadable: false, urgency: 0 };
+    }
+    if (lockAtMs && currentMs > lockAtMs) {
+      return { state: 'expired', label: '기간 종료', downloadable: false, urgency: 0 };
+    }
+    if (lockAtMs && currentMs <= lockAtMs) {
+      const remainingMs = lockAtMs - currentMs;
+      const remainingHours = Math.ceil(remainingMs / (60 * 60 * 1000));
+      const remainingDays = Math.ceil(remainingMs / (24 * 60 * 60 * 1000));
+      if (remainingHours <= 24) {
+        return {
+          state: 'ending-soon',
+          label: Math.max(1, remainingHours) + '시간 남음',
+          downloadable: true,
+          urgency: 3,
+        };
+      }
+      if (remainingDays <= 3) {
+        return {
+          state: 'ending-soon',
+          label: Math.max(1, remainingDays) + '일 남음',
+          downloadable: true,
+          urgency: 2,
+        };
+      }
+      return {
+        state: 'available-until',
+        label: formatDateLabel(normalized.lockAt) + '까지',
+        downloadable: true,
+        urgency: 1,
+      };
+    }
+
+    return { state: 'available', label: '접근 가능', downloadable: true, urgency: 0 };
+  }
+
   function normalizeDownloadCandidate(candidate) {
     if (!candidate || typeof candidate !== 'object') return null;
 
@@ -152,6 +301,9 @@
       normalized.directUrl = directUrl;
     }
 
+    const availability = normalizeAvailability(candidate);
+    if (availability) normalized.availability = availability;
+
     return normalized;
   }
 
@@ -179,10 +331,12 @@
     createRequestId,
     getNextLinkFromHeader,
     getSupportedExtFromName,
+    getAvailabilityStatus,
     isAllowedDownloadUrl,
     isDownloadResponseSuccess,
     isSupportedExt,
     mergeUniqueByContentId,
+    normalizeAvailability,
     normalizeDownloadCandidate,
     normalizeDownloadConcurrency,
     redactIdentifier,

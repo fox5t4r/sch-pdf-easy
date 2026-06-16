@@ -3,10 +3,12 @@ const assert = require('node:assert/strict');
 
 const {
   buildLxResourceEntry,
+  getAvailabilityStatus,
   getNextLinkFromHeader,
   isAllowedDownloadUrl,
   isDownloadResponseSuccess,
   mergeUniqueByContentId,
+  normalizeAvailability,
   normalizeDownloadCandidate,
   normalizeDownloadConcurrency,
   redactIdentifier,
@@ -121,6 +123,70 @@ test('normalizeDownloadCandidate rejects invalid scan results', () => {
   assert.deepEqual(
     normalizeDownloadCandidate({ title: 'x', contentId: '1', ext: 'pdf', directUrl: '/files/1' }),
     { title: 'x', contentId: '1', section: '', subsection: '', type: 'commons', ext: 'pdf', directUrl: '/files/1' }
+  );
+});
+
+test('normalizeAvailability maps LMS availability metadata', () => {
+  assert.deepEqual(
+    normalizeAvailability({
+      unlock_at: '2026-06-16T01:00:00+09:00',
+      lock_at: '2026-06-20T23:59:00+09:00',
+      locked_for_user: 'false',
+      hidden: 0,
+    }),
+    {
+      unlockAt: '2026-06-15T16:00:00.000Z',
+      lockAt: '2026-06-20T14:59:00.000Z',
+      locked: false,
+      hidden: false,
+    }
+  );
+  assert.equal(normalizeAvailability({ title: 'no availability' }), null);
+});
+
+test('getAvailabilityStatus only marks currently accessible resources downloadable', () => {
+  const now = Date.parse('2026-06-16T00:00:00.000Z');
+
+  assert.deepEqual(
+    getAvailabilityStatus({ lockAt: '2026-06-16T06:00:00.000Z' }, now),
+    { state: 'ending-soon', label: '6시간 남음', downloadable: true, urgency: 3 }
+  );
+  assert.equal(
+    getAvailabilityStatus({ lockAt: '2026-06-15T23:59:59.000Z' }, now).downloadable,
+    false
+  );
+  assert.equal(
+    getAvailabilityStatus({ unlockAt: '2026-06-17T00:00:00.000Z' }, now).state,
+    'upcoming'
+  );
+  assert.equal(
+    getAvailabilityStatus({ locked: true }, now).state,
+    'restricted'
+  );
+});
+
+test('normalizeDownloadCandidate preserves valid availability policy metadata', () => {
+  assert.deepEqual(
+    normalizeDownloadCandidate({
+      title: 'x',
+      contentId: '1',
+      ext: 'pdf',
+      lock_at: '2026-06-20T00:00:00.000Z',
+    }),
+    {
+      title: 'x',
+      contentId: '1',
+      section: '',
+      subsection: '',
+      type: 'commons',
+      ext: 'pdf',
+      availability: {
+        unlockAt: null,
+        lockAt: '2026-06-20T00:00:00.000Z',
+        locked: false,
+        hidden: false,
+      },
+    }
   );
 });
 

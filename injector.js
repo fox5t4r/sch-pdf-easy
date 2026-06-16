@@ -62,6 +62,52 @@
     return fname.replace(new RegExp('\\.' + ext + '$', 'i'), '');
   }
 
+  function firstDefined(obj, keys) {
+    if (!obj || typeof obj !== 'object') return null;
+    for (var i = 0; i < keys.length; i++) {
+      var value = obj[keys[i]];
+      if (value !== undefined && value !== null && value !== '') return value;
+    }
+    return null;
+  }
+
+  function toBoolean(value) {
+    if (value === true || value === false) return value;
+    if (typeof value === 'string') {
+      var lower = value.trim().toLowerCase();
+      if (lower === 'true' || lower === '1' || lower === 'yes') return true;
+      if (lower === 'false' || lower === '0' || lower === 'no') return false;
+    }
+    if (typeof value === 'number') return value !== 0;
+    return !!value;
+  }
+
+  function normalizeAvailabilityFromObjects() {
+    var sources = Array.prototype.slice.call(arguments).filter(function (source) {
+      return source && typeof source === 'object';
+    });
+    if (sources.length === 0) return null;
+
+    var unlockAt = null;
+    var lockAt = null;
+    var locked = false;
+    var hidden = false;
+    sources.forEach(function (source) {
+      if (!unlockAt) unlockAt = firstDefined(source, ['unlockAt', 'unlock_at', 'availableFrom', 'available_from', 'available_at', 'openAt', 'open_at', 'startAt', 'start_at']);
+      if (!lockAt) lockAt = firstDefined(source, ['lockAt', 'lock_at', 'availableUntil', 'available_until', 'closeAt', 'close_at', 'endAt', 'end_at', 'dueAt', 'due_at']);
+      locked = locked || toBoolean(firstDefined(source, ['locked', 'lockedForUser', 'locked_for_user', 'isLocked', 'is_locked', 'restricted']));
+      hidden = hidden || toBoolean(firstDefined(source, ['hidden', 'isHidden', 'is_hidden', 'unpublished', 'is_unpublished']));
+    });
+
+    if (!unlockAt && !lockAt && !locked && !hidden) return null;
+    return {
+      unlockAt: unlockAt || null,
+      lockAt: lockAt || null,
+      locked: locked,
+      hidden: hidden,
+    };
+  }
+
   // ────────────────────────────────────────────────────────
   // 스캔 진입점
   // ────────────────────────────────────────────────────────
@@ -126,7 +172,7 @@
               var ct = comp.commons_content.content_type;
               var ext = getSupportedExt('file.' + ct);
               if (ext) {
-                files.push({ title: comp.title || comp.commons_content.content_name || ct.toUpperCase(), contentId: comp.commons_content.content_id, section: section.title, subsection: sub.title, type: 'commons', ext: ext });
+                files.push({ title: comp.title || comp.commons_content.content_name || ct.toUpperCase(), contentId: comp.commons_content.content_id, section: section.title, subsection: sub.title, type: 'commons', ext: ext, availability: normalizeAvailabilityFromObjects(comp, comp.commons_content) });
                 return;
               }
             }
@@ -140,7 +186,7 @@
                   var href = link.getAttribute('href');
                   var ext = getSupportedExt(fname);
                   if (ext && isAllowedHref(href)) {
-                    files.push({ title: comp.title || stripExt(fname, ext), contentId: 'cp_' + (comp.component_id || comp.assignment_id || ('fb' + (++_idCounter))), section: section.title, subsection: sub.title, type: 'canvas_file', ext: ext, directUrl: href });
+                    files.push({ title: comp.title || stripExt(fname, ext), contentId: 'cp_' + (comp.component_id || comp.assignment_id || ('fb' + (++_idCounter))), section: section.title, subsection: sub.title, type: 'canvas_file', ext: ext, directUrl: href, availability: normalizeAvailabilityFromObjects(comp) });
                   }
                 });
               } catch (e) { }
@@ -152,7 +198,7 @@
               var fname = fileObj.file_name || fileObj.name || fileObj.display_name || '';
               var ext = getSupportedExt(fname);
               if (ext) {
-                files.push({ title: comp.title || stripExt(fname, ext), contentId: 'file_' + (comp.id || fileObj.file_id || fileObj.id || ('fb' + (++_idCounter))), section: section.title, subsection: sub.title, type: 'canvas_file', ext: ext, directUrl: fileObj.download_url || fileObj.url || null });
+                files.push({ title: comp.title || stripExt(fname, ext), contentId: 'file_' + (comp.id || fileObj.file_id || fileObj.id || ('fb' + (++_idCounter))), section: section.title, subsection: sub.title, type: 'canvas_file', ext: ext, directUrl: fileObj.download_url || fileObj.url || null, availability: normalizeAvailabilityFromObjects(comp, fileObj) });
               }
             }
           });
@@ -234,6 +280,7 @@
           subsection: '',
           type: 'lx_resource',
           ext: ext,
+          availability: normalizeAvailabilityFromObjects(resourceData, cc),
         });
         return;
       }
@@ -267,6 +314,7 @@
         subsection: '',
         type: 'lx_resource',
         ext: ext2,
+        availability: normalizeAvailabilityFromObjects(cachedRes, cachedRes && cachedRes.commons_content),
       });
     });
 
@@ -280,6 +328,7 @@
         var cachedRes = findCachedResource(f.contentId, f.title);
         if (cachedRes && cachedRes.commons_content) {
           f.lxContentId = cachedRes.commons_content.content_id || null;
+          if (!f.availability) f.availability = normalizeAvailabilityFromObjects(cachedRes, cachedRes.commons_content);
         }
       });
     }
