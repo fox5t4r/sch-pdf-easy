@@ -266,18 +266,21 @@
     if (!normalized) {
       return { state: 'available', label: '접근 가능', downloadable: true, urgency: 0 };
     }
-    if (normalized.hidden || normalized.locked) {
-      return { state: 'restricted', label: '접근 제한', downloadable: false, urgency: 0 };
+    if (normalized.hidden) {
+      return { state: 'hidden', label: '서버 숨김', downloadable: false, urgency: 0 };
+    }
+    if (normalized.locked) {
+      return { state: 'restricted', label: '접근 제한 표시', downloadable: true, urgency: 1 };
     }
 
     const unlockAtMs = normalized.unlockAt ? new Date(normalized.unlockAt).getTime() : null;
     const lockAtMs = normalized.lockAt ? new Date(normalized.lockAt).getTime() : null;
 
     if (unlockAtMs && currentMs < unlockAtMs) {
-      return { state: 'upcoming', label: formatDateLabel(normalized.unlockAt) + ' 공개 예정', downloadable: false, urgency: 0 };
+      return { state: 'upcoming', label: formatDateLabel(normalized.unlockAt) + ' 공개 예정', downloadable: true, urgency: 1 };
     }
     if (lockAtMs && currentMs > lockAtMs) {
-      return { state: 'expired', label: '기간 종료', downloadable: false, urgency: 0 };
+      return { state: 'expired', label: '기간 종료', downloadable: true, urgency: 1 };
     }
     if (lockAtMs && currentMs <= lockAtMs) {
       const remainingMs = lockAtMs - currentMs;
