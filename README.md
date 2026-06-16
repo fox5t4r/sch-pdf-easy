@@ -403,35 +403,49 @@ LMS가 파일 제공 도메인을 변경하거나 CDN 도메인을 추가하면 
 
 ## Repository Hygiene
 
-공개 레포에 불필요한 빌드 산출물과 민감정보가 포함되지 않도록 아래 기준으로 관리합니다.
+공개 레포에 불필요한 로컬 파일과 패키징 산출물이 포함되지 않도록 관리합니다.
 
-### 숨길 것
+### 현재 `.gitignore`에서 제외 중인 항목
 
-* `node_modules/`
-* `build/`
-* `dist/`
-* `out/`
-* `coverage/`
-* `*.zip`
-* `*.crx`
+```gitignore
+.DS_Store
+*.crx
+*.pem
+*.zip
+node_modules/
+.idea/
+.vscode/
+```
 
-### 보호할 것
+### 추가로 제외를 권장하는 항목
 
-* `.env`
-* `.env.*`
-* `*.key`
-* `*.pem`
-* `token.json`
-* `tokens.json`
-* `*secret*.json`
-* `*token*.json`
+현재 프로젝트에는 별도 빌드 산출물이 없지만, 추후 패키징이나 테스트 환경이 확장될 경우 아래 항목을 `.gitignore`에 추가할 수 있습니다.
 
-### 남길 것
+```gitignore
+# Build / test outputs
+build/
+dist/
+out/
+coverage/
 
-* 커밋 메시지 컨벤션
-* Issue/PR 관리 기준
-* 테스트 및 실행 방법
-* 기술적 의사결정 기록
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Secrets / keys / certificates
+*.key
+*.p12
+*.crt
+*.cert
+secrets/
+.secret/
+.tokens/
+token.json
+tokens.json
+*secret*.json
+*token*.json
+```
 
 ### 로컬 정리 명령어
 
@@ -451,6 +465,26 @@ git clean -fdX
 
 ```bash
 git clean -fdx
+```
+
+### 민감정보 점검
+
+현재 추적 파일에서 의심 문자열을 검색합니다.
+
+```bash
+git grep -nEi "api[_-]?key|secret|token|password|passwd|private[_-]?key|client[_-]?secret|authorization|bearer"
+```
+
+전체 히스토리에서 의심 문자열을 검색합니다.
+
+```bash
+git log -p --all -G "api[_-]?key|secret|token|password|passwd|private[_-]?key|client[_-]?secret|authorization|bearer"
+```
+
+파일명 기준으로도 검사합니다.
+
+```bash
+git log --all --name-only --pretty=format: | sort -u | grep -Ei "\.env|key|token|secret|pem|p12|crt|cert"
 ```
 
 ---
@@ -501,54 +535,6 @@ tokens.json
 # IDE
 .idea/
 .vscode/
-```
-
-### `.gitattributes`
-
-운영체제별 줄바꿈 차이를 줄이고, 이미지와 패키지 파일을 바이너리로 관리하기 위해 `.gitattributes`를 사용합니다.
-
-```gitattributes
-# Normalize text files
-* text=auto
-
-# Source files
-*.js text eol=lf
-*.css text eol=lf
-*.json text eol=lf
-*.md text eol=lf
-*.yml text eol=lf
-*.yaml text eol=lf
-
-# Binary assets
-*.png binary
-*.jpg binary
-*.jpeg binary
-*.gif binary
-*.ico binary
-
-# Packaged extension artifacts
-*.zip binary
-*.crx binary
-```
-
-### 민감정보 점검
-
-현재 추적 파일에서 의심 문자열을 검색합니다.
-
-```bash
-git grep -nEi "api[_-]?key|secret|token|password|passwd|private[_-]?key|client[_-]?secret|authorization|bearer"
-```
-
-전체 히스토리에서 의심 문자열을 검색합니다.
-
-```bash
-git log -p --all -G "api[_-]?key|secret|token|password|passwd|private[_-]?key|client[_-]?secret|authorization|bearer"
-```
-
-파일명 기준으로도 검사합니다.
-
-```bash
-git log --all --name-only --pretty=format: | sort -u | grep -Ei "\.env|key|token|secret|pem|p12|crt|cert"
 ```
 
 ---
@@ -604,11 +590,9 @@ remove: 사용하지 않는 이미지 파일 삭제
 
 ## Issue / PR 관리
 
-현재 개인 프로젝트이지만, 협업 가능한 구조를 고려해 Issue와 Pull Request 기준을 문서화합니다.
+현재는 개인 프로젝트로 개발했지만, 버그 제보와 개선 요청은 GitHub Issues를 통해 관리합니다.
 
-### Issue
-
-Issue에는 다음 내용을 포함합니다.
+Issue에는 다음 내용을 포함하는 것을 권장합니다.
 
 * 문제 상황 또는 개선 목적
 * 재현 절차
@@ -619,20 +603,10 @@ Issue에는 다음 내용을 포함합니다.
 
 Issue 작성 위치: [GitHub Issues](https://github.com/fox5t4r/sch-pdf-easy/issues)
 
-### Pull Request
+Pull Request는 현재 별도 템플릿을 사용하지 않습니다.
+추후 협업이 필요한 경우 `.github/pull_request_template.md`와 `.github/ISSUE_TEMPLATE/`을 추가해 변경 요약, 테스트 결과, 관련 Issue, 사용자 영향, 보안 영향 여부를 기록하도록 확장할 예정입니다.
 
-Pull Request에는 다음 내용을 포함합니다.
-
-* 변경 요약
-* 변경 이유
-* 테스트 결과
-* 관련 Issue
-* 사용자 영향
-* 보안 영향 여부
-
-Pull Request 작성 위치: [GitHub Pull Requests](https://github.com/fox5t4r/sch-pdf-easy/pulls)
-
-병합 전 아래 명령을 통과해야 합니다.
+병합 전에는 아래 명령을 통과하는 것을 기준으로 합니다.
 
 ```bash
 npm run lint:syntax
